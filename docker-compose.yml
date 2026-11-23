@@ -1,0 +1,103 @@
+# The AI platform: one public entry point, everything else private.
+#
+#   caddy     HTTPS on 80/443 (automatic Let's Encrypt certificate for DOMAIN)
+#   api       our FastAPI gateway — API keys, rate limits, agents, usage log
+#   ollama    the model runtime; reachable only by the api
+#   postgres  API keys (hashed) and the usage log
+#
+# Start:     docker compose up -d --build
+# With GPU:  docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+# Settings:  .env (scripts/setup.sh creates it from .env.example)
+
+services:
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN in .env (run scripts/setup.sh)}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+  api:
+    build: ./api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://ai:${POSTGRES_PASSWORD:?run scripts/setup.sh}@postgres:5432/ai
+      OLLAMA_URL: http://ollama:11434
+      DEFAULT_MODEL: ${DEFAULT_MODEL:-qwen3:8b}
+      MODEL_OVERRIDES: ${MODEL_OVERRIDES:-}
+      MODEL_CONCURRENCY: ${OLLAMA_NUM_PARALLEL:-1}
+      QUEUE_TIMEOUT_SECONDS: ${QUEUE_TIMEOUT_SECONDS:-120}
+      NUM_CTX: ${NUM_CTX:-12288}
+      DEFAULT_RATE_LIMIT_PER_MINUTE: ${DEFAULT_RATE_LIMIT_PER_MINUTE:-30}
+      MAX_TRANSCRIPT_CHARS: ${MAX_TRANSCRIPT_CHARS:-20000}
+      DOCS_ENABLED: ${DOCS_ENABLED:-true}
+      CHAT_MODELS: ${CHAT_MODELS:-}
+      MAX_TOOL_STEPS: ${MAX_TOOL_STEPS:-8}
+      TOOL_TIMEOUT_SECONDS: ${TOOL_TIMEOUT_SECONDS:-30}
+    volumes:
+      - ./benchmarks:/srv/benchmarks
+      # Skills and plugins are installed by putting folders here, then
+      # `docker compose restart api`. Read-only: callers can use them, never change them.
+      - ./skills:/srv/skills:ro
+      - ./plugins:/srv/plugins:ro
+
+  ollama:
+    image: ollama/ollama:${OLLAMA_VERSION:-latest}
+    restart: unless-stopped
+    environment:
+      # Keep the model in memory between requests; reloading a multi-GB model
+      # on every call adds tens of seconds.
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-24h}
+      # Requests served at once. Each costs a full context of memory, and on a
+      # CPU server more parallelism only splits the same cores.
+      OLLAMA_NUM_PARALLEL: ${OLLAMA_NUM_PARALLEL:-1}
+      OLLAMA_MAX_LOADED_MODELS: ${OLLAMA_MAX_LOADED_MODELS:-1}
+      OLLAMA_CONTEXT_LENGTH: ${NUM_CTX:-12288}
+      OLLAMA_FLASH_ATTENTION: ${OLLAMA_FLASH_ATTENTION:-1}
+    # Hard cap so a model that is too big fails to load instead of pushing
+    # Postgres and the API out of memory. Size it to the server (README).
+    mem_limit: ${OLLAMA_MEMORY_LIMIT:-16g}
+    volumes:
+      - ollama_models:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ai
+      POSTGRES_DB: ai
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run scripts/setup.sh}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ai -d ai"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  caddy_data:
+  caddy_config:
+  ollama_models:
+  postgres_data:

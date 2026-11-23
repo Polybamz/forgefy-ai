@@ -1,0 +1,25 @@
+# Public entry point. DOMAIN is a hostname pointing at this server (e.g.
+# ai.example.com); Caddy gets and renews its HTTPS certificate automatically.
+# DOMAIN=:80 serves plain HTTP for a first test without a domain — never for
+# real traffic, the API keys would cross the internet unencrypted.
+#
+# Only the API is reachable from here. The model runtime and the database have
+# no route in: applications go through the API's keys, limits and usage log.
+{$DOMAIN} {
+	request_body {
+		max_size 2MB
+	}
+
+	reverse_proxy api:8000 {
+		transport http {
+			# Agent calls on a CPU server can take minutes.
+			response_header_timeout 15m
+			read_timeout 15m
+		}
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}

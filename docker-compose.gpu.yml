@@ -1,0 +1,14 @@
+# NVIDIA GPU support. Use together with the main file:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+# Needs the NVIDIA driver and the NVIDIA Container Toolkit on the server
+# (scripts/setup.sh checks for both).
+
+services:
+  ollama:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

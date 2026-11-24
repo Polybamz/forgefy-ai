@@ -1,1 +1,1 @@
-"""AI platform API: authenticated agent endpoints in front of a private model runtime."""
+"""Model server: self-hosted open models behind API keys, in OpenAI, Anthropic and Ollama formats."""

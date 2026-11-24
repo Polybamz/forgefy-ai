@@ -4,5 +4,3 @@ httpx==0.28.1
 pydantic==2.11.4
 pydantic-settings==2.9.1
 asyncpg==0.30.0
-# Time-zone database for zoneinfo (the slim image has none) — used by plugins.
-tzdata==2025.2

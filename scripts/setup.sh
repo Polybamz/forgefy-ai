@@ -52,30 +52,40 @@ fi
 # leave them ~8 GB and give the runtime the rest.
 mem_limit=$(( ram_gb > 12 ? ram_gb - 8 : 4 ))
 
-# Suggest a model (README "Choosing a model") that fits in that limit.
-if [ -n "$gpu_name" ] && [ "$vram_gb" -ge 20 ]; then
-  model="qwen3:30b"
-elif [ -n "$gpu_name" ] && [ "$vram_gb" -ge 10 ]; then
-  model="qwen3:14b"
-elif [ "$mem_limit" -ge 22 ]; then
-  model="qwen3:30b"
-elif [ "$mem_limit" -ge 8 ]; then
-  model="qwen3:8b"
+# Pick a set of models from several families (MODELS.md) sized to that limit.
+# Each role — general, fast, reasoning, vision — gets the best that fits;
+# "others" are offered by name for apps that want them.
+embed="bge-m3"
+loaded=2
+if { [ -n "$gpu_name" ] && [ "$vram_gb" -ge 20 ]; } || [ "$mem_limit" -ge 22 ]; then
+  general="qwen3:14b"; fast="qwen3:4b"; reasoning="deepseek-r1:14b"; vision="gemma3:12b"
+  others="mistral-nemo:12b llama3.1:8b"
+elif { [ -n "$gpu_name" ] && [ "$vram_gb" -ge 10 ]; } || [ "$mem_limit" -ge 8 ]; then
+  general="qwen3:8b"; fast="qwen3:4b"; reasoning="deepseek-r1:8b"; vision="gemma3:4b"
+  others="mistral:7b llama3.1:8b"
 elif [ "$mem_limit" -ge 4 ]; then
-  model="qwen3:4b"
-  warn "Little memory: qwen3:4b fits, but its blueprints and descriptions will be noticeably weaker."
+  general="qwen3:4b"; fast="qwen3:1.7b"; reasoning="deepseek-r1:1.5b"; vision="gemma3:4b"
+  others=""; loaded=1
+  warn "Little memory: only small models fit, one at a time — expect noticeably weaker answers."
 else
   die "Under ~8 GB RAM is too small to run a useful model next to the other services."
 fi
-say "Suggested: DEFAULT_MODEL=$model, OLLAMA_MEMORY_LIMIT=${mem_limit}g"
+chat_models=$(printf '%s\n' "$general" "$fast" $others "$reasoning" "$vision" | awk '!seen[$0]++' | paste -sd, -)
+all_models="$(echo "$chat_models" | tr , ' ') $embed"
+aliases="general=$general,fast=$fast,reasoning=$reasoning,vision=$vision,embed=$embed,claude-*=$general"
+say "Suggested models: ${chat_models//,/, } + $embed (embeddings); memory limit ${mem_limit}g"
 
 # ── 3. .env ──────────────────────────────────────────────────────────────────
 if [ ! -f .env ]; then
   cp .env.example .env
-  set_env MODELS "\"$model\""
-  set_env DEFAULT_MODEL "$model"
+  set_env MODELS "\"$all_models\""
+  set_env DEFAULT_MODEL "$general"
+  set_env CHAT_MODELS "$chat_models"
+  set_env EMBEDDING_MODELS "$embed"
+  set_env MODEL_ALIASES "$aliases"
   set_env OLLAMA_MEMORY_LIMIT "${mem_limit}g"
-  say "Created .env with the suggested model and memory limit"
+  set_env OLLAMA_MAX_LOADED_MODELS "$loaded"
+  say "Created .env with the suggested models, roles and memory limit"
 else
   say ".env already exists — leaving its model and capacity settings as they are"
 fi
@@ -84,6 +94,12 @@ if ! grep -qE '^POSTGRES_PASSWORD=.{24,}' .env; then
   password=$(openssl rand -hex 24 2>/dev/null || head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')
   set_env POSTGRES_PASSWORD "$password"
   say "Generated a database password (in .env)"
+fi
+if ! grep -qE '^ADMIN_TOKEN=.{32,}' .env; then
+  grep -q '^ADMIN_TOKEN=' .env || echo "ADMIN_TOKEN=" >> .env  # .env made before the console existed
+  admin=$(openssl rand -hex 24 2>/dev/null || head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')
+  set_env ADMIN_TOKEN "$admin"
+  say "Generated an admin console token (ADMIN_TOKEN in .env)"
 fi
 chmod 600 .env
 
@@ -119,10 +135,12 @@ Next:
   1. Harden the server (firewall, SSH, automatic updates) if not done yet:
        sudo ./scripts/harden.sh
   2. Start:            $compose up -d --build
-  3. Download models:  ./scripts/pull-models.sh
-  4. Create a key for each application:
+  3. Download models:  ./scripts/pull-models.sh     (several GB — takes a while)
+  4. Open the admin console:  https://$domain/admin
+     sign in with ADMIN_TOKEN (grep ADMIN_TOKEN .env), then create a key for
+     each app under "API keys" — or from the command line:
        docker compose exec api python -m app.cli keys create --app forgefy --env production
-       docker compose exec api python -m app.cli keys create --app vndor --env production
   5. Test:             ./scripts/test.sh https://$domain <a key>
-  6. Benchmark:        docker compose exec api python -m app.bench
+  6. Compare models:   docker compose exec api python -m app.bench
+     then adjust which model fills each role (MODEL_ALIASES in .env)
 EOF

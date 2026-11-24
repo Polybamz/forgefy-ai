@@ -18,10 +18,19 @@ fi
 docker compose ps --status running --services | grep -qx ollama \
   || { echo "ollama is not running — start it with: docker compose up -d" >&2; exit 1; }
 
+failed=""
 for model in $models; do
   echo "==> pulling $model"
-  docker compose exec -T ollama ollama pull "$model"
+  if ! output=$(docker compose exec -T ollama ollama pull "$model" 2>&1); then
+    echo "$output" | tail -n 3
+    if echo "$output" | grep -q "newer version of Ollama"; then
+      echo "!!  $model needs a newer Ollama. Update it, then re-run this script:"
+      echo "      docker compose pull ollama && docker compose up -d"
+    fi
+    failed="$failed $model"
+  fi
 done
+[ -z "$failed" ] || echo "!!  not downloaded:$failed"
 
 echo
 echo "==> models on this server:"

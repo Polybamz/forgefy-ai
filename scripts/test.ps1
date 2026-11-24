@@ -24,25 +24,23 @@ try {
 Pass "requests without a key are refused"
 
 try { $health = Invoke-RestMethod "$Url/api/v1/health" -Headers $auth -TimeoutSec 15 } catch { Fail "the API key was rejected: $($_.Exception.Message)" }
-Pass "key accepted - application: $($health.app)"
+Pass "key accepted - app: $($health.app)"
 if ($health.runtime -ne "ok") { Fail "model runtime: $($health.runtime)" }
-if (@($health.models).Count -eq 0) { Fail "no models downloaded yet - run ./scripts/pull-models.sh on the server" }
-Pass "models on the server: $(@($health.models) -join ', ')"
+if (@($health.models_missing).Count -gt 0) { Fail "models not downloaded yet: $(@($health.models_missing) -join ', ') - run ./scripts/pull-models.sh on the server" }
+Pass "models on offer: $(@($health.models_offered) -join ', ')"
 
-if ($health.app -eq "forgefy") {
-    $path = "/api/v1/agents/forgefy/requirements"
-    $body = @{ transcript = "Amina: Patients must be able to book an appointment online.`nPaul: And they need an SMS reminder the day before.`nAmina: Payments can come later, that is nice to have." }
-} else {
-    $path = "/api/v1/agents/vndor/product-description"
-    $body = @{ name = "Handwoven raffia tote"; facts = @{ material = "natural raffia"; size = "40 x 30 cm" }; language = "en" }
+function Ask($path, $body) {
+    try {
+        return Invoke-RestMethod "$Url$path" -Method Post -Headers $auth -ContentType "application/json; charset=utf-8" `
+            -Body ([Text.Encoding]::UTF8.GetBytes(($body | ConvertTo-Json -Depth 6))) -TimeoutSec 900
+    } catch { Fail "$path failed: $($_.Exception.Message) $($_.ErrorDetails.Message)" }
 }
 
-Write-Host "..   running $path (the first call loads the model into memory - can take a minute)"
-try {
-    $r = Invoke-RestMethod "$Url$path" -Method Post -Headers $auth -ContentType "application/json; charset=utf-8" `
-        -Body ([Text.Encoding]::UTF8.GetBytes(($body | ConvertTo-Json -Depth 5))) -TimeoutSec 900
-} catch { Fail "agent call failed: $($_.Exception.Message) $($_.ErrorDetails.Message)" }
+Write-Host "..   asking in OpenAI format (the first call loads the model into memory - can take a minute)"
+$t = Get-Date
+$r = Ask "/v1/chat/completions" @{ model = "default"; messages = @(@{ role = "user"; content = "In one sentence: what is a to-do list app?" }) }
+Pass ("OpenAI format ({0:N0}s): {1}" -f ((Get-Date) - $t).TotalSeconds, $r.choices[0].message.content.Trim())
 
-if ($health.app -eq "forgefy") { Pass "answer: $($r.result.summary)" } else { Pass "answer: $($r.result.short_description)" }
-Pass "latency: $($r.latency_ms) ms, speed: $($r.usage.tokens_per_second) tokens/s"
-if (@($r.warnings).Count -gt 0) { Write-Host "!!   warnings: $(@($r.warnings) -join '; ')" -ForegroundColor Yellow }
+$t = Get-Date
+$r = Ask "/api/chat" @{ model = "default"; stream = $false; messages = @(@{ role = "user"; content = "Say hello in French." }) }
+Pass ("Ollama format ({0:N0}s): {1}" -f ((Get-Date) - $t).TotalSeconds, $r.message.content.Trim())

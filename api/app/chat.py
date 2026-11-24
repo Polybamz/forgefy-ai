@@ -1,21 +1,22 @@
-"""General-purpose, OpenAI-compatible API — for anything, not just our apps.
+"""The model service: your models in the three formats clients speak.
 
-    GET  /v1/models              models this server offers
-    POST /v1/chat/completions    chat: system instructions, your own tools, streaming,
-                                 JSON mode — plus server-side skills and plugins
-    GET  /v1/skills              skills you can enable
-    GET  /v1/plugins             plugins your key may use, with their tools
+    GET  /v1/models                      models and role names on offer, with capabilities
+    POST /v1/chat/completions            OpenAI format
+    POST /v1/embeddings                  OpenAI format, embeddings
+    POST /v1/messages                    Anthropic format
+    POST /v1/messages/count_tokens       Anthropic token count (an estimate)
+    POST /api/chat                       Ollama format (e.g. Forgefy's backend)
+    POST /api/embed                      Ollama format, embeddings
+    GET  /api/tags                       models on offer, Ollama format
 
-Point any OpenAI client at https://<domain>/v1 with an API key. Two extension
-fields on /v1/chat/completions (with the OpenAI SDKs, pass them in extra_body):
+Requests pass through to the model as sent — system instructions, the
+client's own tools, tool results, streaming, JSON mode — so skills, plugins,
+MCP servers and agent frameworks keep working on the client's side: Claude
+Code and the Claude Agent SDK over the Anthropic format, the OpenAI SDKs,
+LangChain, n8n, Open WebUI and editor extensions over the OpenAI format.
 
-    "skills":  ["invoice-writer"] or "all"
-    "plugins": ["web", "calculator"]
-
-Without them a request goes straight to the model, streaming included, and any
-tools you send come back to you as tool_calls to run yourself. With them, the
-server runs its own tools in a loop — loading skills, calling plugins — and
-returns the final answer; the steps it took are listed in `x_tool_steps`.
+What the platform adds: API keys, rate limits, a model allowlist with aliases,
+a queue in front of the model, and a usage record per request.
 """
 from __future__ import annotations
 
@@ -23,7 +24,7 @@ import json
 import logging
 import time
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Callable
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
@@ -31,106 +32,182 @@ from fastapi.responses import StreamingResponse
 
 from app.auth import authenticate
 from app.llm import ModelBusy, ModelError
-from app.plugins import SEPARATOR, Plugin, call_tool, openai_tools
-from app.skills import LOAD_SKILL, Skill, load_skill_tool, read_skill, skills_prompt
 from app.store import ApiKey, UsageRecord
 
 logger = logging.getLogger("ai-api")
-router = APIRouter(prefix="/v1", tags=["general (OpenAI-compatible)"])
+router = APIRouter(prefix="/v1", tags=["model service (OpenAI / Anthropic compatible)"])
 Caller = Annotated[ApiKey, Depends(authenticate)]
 
-Handler = Callable[[Any], Awaitable[str]]
+
+def _require_chat(caller: ApiKey) -> None:
+    if not caller.allows("chat"):
+        raise HTTPException(403, "This key does not have the 'chat' permission.")
 
 
-def _require(caller: ApiKey, scope: str) -> None:
-    if not caller.allows(scope):
-        raise HTTPException(403, f"This key does not have the '{scope}' permission.")
+async def _catalog(request: Request) -> list[dict[str, Any]]:
+    """Every name a caller can use: models, then role names pointing at them."""
+    settings, llm = request.app.state.settings, request.app.state.llm
+    entries = []
+    for kind, models in (("chat", settings.chat_models()), ("embed", settings.embedding_models())):
+        for m in models:
+            entries.append({"id": m, "kind": kind, "capabilities": sorted(await llm.capabilities(m))})
+        for name, target in settings.role_names(kind).items():
+            entries.append({"id": name, "kind": kind, "alias_of": target})
+    return entries
 
-
-# ── Discovery ────────────────────────────────────────────────────────────────
 
 @router.get("/models")
 async def list_models(caller: Caller, request: Request) -> dict:
-    _require(caller, "chat")
-    models = request.app.state.settings.chat_models()
+    """Models and role names on offer. Each model lists what it can do (tools, vision…)."""
+    _require_chat(caller)
     return {"object": "list", "data": [
-        {"id": m, "object": "model", "created": 0, "owned_by": "ai-platform"} for m in models
+        {"object": "model", "type": "model", "display_name": e["id"], "created": 0,
+         "created_at": "1970-01-01T00:00:00Z", "owned_by": "ai-platform", **e}
+        for e in await _catalog(request)
     ]}
 
-
-@router.get("/skills")
-async def list_skills(caller: Caller, request: Request) -> dict:
-    _require(caller, "skills")
-    return {"skills": [
-        {"name": s.name, "description": s.description, "files": s.files}
-        for s in request.app.state.skills.values()
-    ]}
-
-
-@router.get("/plugins")
-async def list_plugins(caller: Caller, request: Request) -> dict:
-    return {"plugins": [
-        {"name": p.name, "description": p.description,
-         "tools": [t["function"] for t in openai_tools(p)]}
-        for p in request.app.state.plugins.values() if caller.allows(f"plugin:{p.name}")
-    ]}
-
-
-# ── Chat ─────────────────────────────────────────────────────────────────────
 
 @router.post("/chat/completions")
 async def chat_completions(caller: Caller, request: Request, body: dict = Body(...)):
-    _require(caller, "chat")
+    """OpenAI format. Usage is read from `usage` (and the last stream chunk, if requested)."""
+    def default_thinking_off(b: dict) -> None:
+        if "reasoning_effort" not in b and "reasoning" not in b:
+            b["reasoning_effort"] = "none"
+
+    return await _forward(caller, request, body, "/v1/chat/completions", "chat",
+                          default_thinking_off, _openai_usage)
+
+
+@router.post("/messages")
+async def messages(caller: Caller, request: Request, body: dict = Body(...)):
+    """Anthropic format — what Claude Code and the Claude Agent SDK send."""
+    def default_thinking_off(b: dict) -> None:
+        b.setdefault("thinking", {"type": "disabled"})
+
+    return await _forward(caller, request, body, "/v1/messages", "messages",
+                          default_thinking_off, _anthropic_usage)
+
+
+native_router = APIRouter(prefix="/api", tags=["Ollama-compatible"])
+
+
+@native_router.post("/chat")
+async def ollama_chat(caller: Caller, request: Request, body: dict = Body(...)):
+    """Ollama's own chat API — what Forgefy's backend and other Ollama clients send.
+
+    Point such a client's Ollama URL at this server and give it a key as a
+    bearer token. Streams newline-delimited JSON by default, as Ollama does.
+    """
+    def default_thinking_off(b: dict) -> None:
+        b.setdefault("think", False)
+
+    return await _forward(caller, request, body, "/api/chat", "ollama-chat", default_thinking_off,
+                          _ollama_usage, stream_by_default=True, media_type="application/x-ndjson")
+
+
+@native_router.get("/tags")
+async def ollama_tags(caller: Caller, request: Request) -> dict:
+    """The models and role names on offer, in Ollama's format."""
+    _require_chat(caller)
+    return {"models": [{"name": e["id"], "model": e["id"], "details": {k: v for k, v in e.items() if k != "id"}}
+                       for e in await _catalog(request)]}
+
+
+@router.post("/embeddings")
+async def embeddings(caller: Caller, request: Request, body: dict = Body(...)):
+    """OpenAI-format embeddings: {"model": "embed", "input": "text" or ["text", …]}."""
+    return await _forward(caller, request, body, "/v1/embeddings", "embeddings", None,
+                          lambda d: ((d.get("usage") or {}).get("prompt_tokens"), None), kind="embed")
+
+
+@native_router.post("/embed")
+async def ollama_embed(caller: Caller, request: Request, body: dict = Body(...)):
+    """Ollama-format embeddings: {"model": "embed", "input": "text" or ["text", …]}."""
+    return await _forward(caller, request, body, "/api/embed", "embeddings", None,
+                          lambda d: (d.get("prompt_eval_count"), None), kind="embed")
+
+
+@router.post("/messages/count_tokens")
+async def count_tokens(caller: Caller, request: Request, body: dict = Body(...)) -> dict:
+    """An estimate (about 4 characters per token): the runtime has no exact counter.
+
+    Clients use it to decide when a conversation is getting long, which an
+    estimate serves well enough.
+    """
+    _require_chat(caller)
+    text = json.dumps([body.get("system"), body.get("messages"), body.get("tools")], ensure_ascii=False)
+    return {"input_tokens": max(1, len(text) // 4)}
+
+
+# ── Forwarding ───────────────────────────────────────────────────────────────
+
+def _openai_usage(data: dict) -> tuple[int | None, int | None]:
+    usage = data.get("usage") or {}
+    return usage.get("prompt_tokens"), usage.get("completion_tokens")
+
+
+def _anthropic_usage(data: dict) -> tuple[int | None, int | None]:
+    usage = data.get("usage") or (data.get("message") or {}).get("usage") or {}
+    return usage.get("input_tokens"), usage.get("output_tokens")
+
+
+def _ollama_usage(data: dict) -> tuple[int | None, int | None]:
+    return data.get("prompt_eval_count"), data.get("eval_count")
+
+
+async def _forward(
+    caller: ApiKey, request: Request, body: dict, path: str, task: str,
+    apply_thinking_default: Callable[[dict], None] | None,
+    read_usage: Callable[[dict], tuple[int | None, int | None]],
+    *, kind: str = "chat", stream_by_default: bool = False, media_type: str = "text/event-stream",
+):
+    _require_chat(caller)
     state = request.app.state
     settings = state.settings
 
-    if not isinstance(body.get("messages"), list) or not body["messages"]:
+    if kind == "chat" and (not isinstance(body.get("messages"), list) or not body["messages"]):
         raise HTTPException(422, "messages must be a non-empty list")
-    model = body.get("model") or settings.DEFAULT_MODEL
-    if model == "default":
-        model = settings.DEFAULT_MODEL
-    allowed = settings.chat_models()
-    if model not in allowed:
-        raise HTTPException(422, f"Model '{model}' is not offered here. Available: {', '.join(allowed)}")
+    if kind == "embed" and not body.get("input"):
+        raise HTTPException(422, "input must be a string or a non-empty list of strings")
+    requested = body.get("model") or "default"
+    model = settings.resolve_model(requested, kind)
+    if model is None:
+        names = settings._offered(kind) + list(settings.role_names(kind))
+        what = "embedding model" if kind == "embed" else "model"
+        raise HTTPException(
+            422, f"{what.capitalize()} '{requested}' is not offered here. Available: {', '.join(names) or 'none'}",
+        )
     body["model"] = model
-
-    skills = _requested_skills(caller, state.skills, body.pop("skills", None))
-    plugins = _requested_plugins(caller, state.plugins, body.pop("plugins", None))
+    # Only models that can think get a thinking setting: Ollama rejects one
+    # sent to a model without that capability.
+    if settings.THINKING == "off" and apply_thinking_default and "thinking" in await state.llm.capabilities(model):
+        apply_thinking_default(body)
 
     record = UsageRecord(
         request_id=request.headers.get("x-request-id") or uuid.uuid4().hex, key_id=caller.id,
-        app=caller.app, environment=caller.environment, task="chat", model=model, status="ok", latency_ms=0,
+        app=caller.app, environment=caller.environment, task=task, model=model, status="ok", latency_ms=0,
     )
     started = time.monotonic()
 
-    async def finish(usage: dict | None = None, status: str = "ok", error: str | None = None) -> None:
+    async def finish(tokens: tuple[int | None, int | None] = (None, None), status: str = "ok",
+                     error: str | None = None) -> None:
+        record.prompt_tokens, record.completion_tokens = tokens
         record.status, record.error = status, error
-        if usage:
-            record.prompt_tokens = usage.get("prompt_tokens")
-            record.completion_tokens = usage.get("completion_tokens")
         record.latency_ms = int((time.monotonic() - started) * 1000)
         try:
             await state.store.log_usage(record)
         except Exception:
             logger.exception("could not record usage request_id=%s", record.request_id)
-        logger.info("chat app=%s model=%s status=%s latency_ms=%d skills=%d plugins=%d request_id=%s",
-                    caller.app, model, status, record.latency_ms, len(skills), len(plugins), record.request_id)
+        logger.info("%s app=%s model=%s (asked %s) status=%s latency_ms=%d request_id=%s",
+                    task, caller.app, model, requested, status, record.latency_ms, record.request_id)
 
     try:
-        if not skills and not plugins:
-            if body.get("stream"):
-                return await _stream_passthrough(state.llm, body, finish)
-            async with state.llm.slot() as queue_ms:
-                record.queue_ms = queue_ms
-                data = await state.llm.chat_completions(body)
-            await finish(data.get("usage"))
-            return data
-
-        data = await _run_with_server_tools(state, body, skills, plugins, settings)
-        await finish(data.get("usage"))
-        if body.get("stream"):
-            include_usage = bool((body.get("stream_options") or {}).get("include_usage"))
-            return StreamingResponse(_as_sse(data, include_usage), media_type="text/event-stream")
+        if body.get("stream", stream_by_default):
+            return await _stream(state.llm, path, body, finish, read_usage, media_type)
+        async with state.llm.slot() as queue_ms:
+            record.queue_ms = queue_ms
+            data = await state.llm.forward(path, body)
+        await finish(read_usage(data))
         return data
     except ModelBusy as exc:
         await finish(status="busy", error="queue timeout")
@@ -140,57 +217,39 @@ async def chat_completions(caller: Caller, request: Request, body: dict = Body(.
         raise HTTPException(exc.status, f"Model error: {exc}") from exc
 
 
-def _requested_skills(caller: ApiKey, available: dict[str, Skill], requested: Any) -> list[Skill]:
-    if not requested:
-        return []
-    _require(caller, "skills")
-    if requested == "all":
-        return list(available.values())
-    if not isinstance(requested, list) or not all(isinstance(s, str) for s in requested):
-        raise HTTPException(422, 'skills must be a list of skill names, or "all"')
-    unknown = [s for s in requested if s not in available]
-    if unknown:
-        raise HTTPException(422, f"Unknown skills: {', '.join(unknown)}. Available: {', '.join(available) or 'none'}")
-    return [available[s] for s in dict.fromkeys(requested)]
+async def _stream(llm, path: str, body: dict, finish, read_usage, media_type: str) -> StreamingResponse:
+    """Relay the model's stream (SSE or NDJSON). The model slot is held until it ends.
 
-
-def _requested_plugins(caller: ApiKey, available: dict[str, Plugin], requested: Any) -> list[Plugin]:
-    if not requested:
-        return []
-    if not isinstance(requested, list) or not all(isinstance(p, str) for p in requested):
-        raise HTTPException(422, "plugins must be a list of plugin names")
-    unknown = [p for p in requested if p not in available]
-    if unknown:
-        raise HTTPException(422, f"Unknown plugins: {', '.join(unknown)}. Available: {', '.join(available) or 'none'}")
-    for name in requested:
-        _require(caller, f"plugin:{name}")
-    return [available[p] for p in dict.fromkeys(requested)]
-
-
-async def _stream_passthrough(llm, body: dict, finish) -> StreamingResponse:
-    """Stream straight from the model. The slot is held until the stream ends.
-
-    The first line is read before answering, so a missing model or a busy
-    server is still reported as a proper HTTP error rather than a broken stream.
+    The first line is read before answering, so a missing model or a full
+    queue is reported as a proper HTTP error rather than a broken stream.
     """
     slot = llm.slot()
     await slot.__aenter__()  # raises ModelBusy
-    upstream = llm.stream_chat_completions(body)
+    upstream = llm.forward_stream(path, body)
     try:
         first = await upstream.__anext__()
     except BaseException:
         await slot.__aexit__(None, None, None)
         raise
 
+    async def lines() -> AsyncIterator[bytes]:
+        yield first
+        async for line in upstream:
+            yield line
+
     async def relay() -> AsyncIterator[bytes]:
-        usage = None
+        prompt_tokens = completion_tokens = None
         status, error = "ok", None
         try:
-            yield first
-            async for line in upstream:
-                if line.startswith(b"data: {") and b'"usage"' in line:
+            async for line in lines():
+                # Usage arrives in an SSE event ("data: {...}") or, for Ollama's
+                # own API, in the final JSON line.
+                payload = line[6:] if line.startswith(b"data: {") else line
+                if payload.startswith(b"{") and (b'"usage"' in payload or b'"eval_count"' in payload):
                     try:
-                        usage = json.loads(line[6:]).get("usage") or usage
+                        p, c = read_usage(json.loads(payload))
+                        prompt_tokens = p if p is not None else prompt_tokens
+                        completion_tokens = c if c is not None else completion_tokens
                     except ValueError:
                         pass
                 yield line
@@ -198,123 +257,22 @@ async def _stream_passthrough(llm, body: dict, finish) -> StreamingResponse:
             status, error = "model_error", str(exc)
         finally:
             await slot.__aexit__(None, None, None)
-            await finish(usage, status, error)
+            await finish((prompt_tokens, completion_tokens), status, error)
 
-    return StreamingResponse(relay(), media_type="text/event-stream")
-
-
-async def _run_with_server_tools(state, body: dict, skills: list[Skill], plugins: list[Plugin], settings) -> dict:
-    """Call the model, run the server-side tools it asks for, repeat until it answers.
-
-    The caller's own tools stay theirs: if the model calls one, the loop stops
-    and that call is returned for the caller to run. (If one turn mixes the
-    caller's tools with server tools, only the caller's calls are returned.)
-    """
-    handlers: dict[str, Handler] = {}
-    server_tools: list[dict] = []
-    if skills:
-        by_name = {s.name: s for s in skills}
-
-        async def load(arguments: Any) -> str:
-            try:
-                args = json.loads(arguments or "{}") if isinstance(arguments, str) else arguments
-            except ValueError:
-                return "error: arguments must be JSON"
-            return read_skill(by_name, str(args.get("name", "")), args.get("file"))
-
-        handlers[LOAD_SKILL] = load
-        server_tools.append(load_skill_tool(skills))
-    for plugin in plugins:
-        for tool_def in openai_tools(plugin):
-            full_name = tool_def["function"]["name"]
-            tool_name = full_name.split(SEPARATOR, 1)[1]
-
-            async def run(arguments: Any, plugin=plugin, tool_name=tool_name) -> str:
-                return await call_tool(plugin, tool_name, arguments, settings.TOOL_TIMEOUT_SECONDS)
-
-            handlers[full_name] = run
-            server_tools.append(tool_def)
-
-    client_tools = list(body.get("tools") or [])
-    clashes = {t.get("function", {}).get("name") for t in client_tools} & set(handlers)
-    if clashes:
-        raise HTTPException(422, f"Your tool names clash with server tools: {', '.join(sorted(clashes))}")
-
-    messages = list(body["messages"])
-    if skills:
-        messages = _with_system(messages, skills_prompt(skills))
-
-    request = {k: v for k, v in body.items() if k not in ("stream", "stream_options")}
-    usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-    steps: list[dict] = []
-    data: dict = {}
-
-    for step in range(settings.MAX_TOOL_STEPS):
-        call = {**request, "messages": messages, "tools": client_tools + server_tools}
-        if step == settings.MAX_TOOL_STEPS - 1:
-            call["tool_choice"] = "none"  # last round: answer with what you have
-        async with state.llm.slot():
-            data = await state.llm.chat_completions(call)
-        for k in usage:
-            usage[k] += (data.get("usage") or {}).get(k) or 0
-
-        choice = data["choices"][0]
-        message = choice["message"]
-        calls = message.get("tool_calls") or []
-        server_calls = [c for c in calls if c.get("function", {}).get("name") in handlers]
-        client_calls = [c for c in calls if c not in server_calls]
-        if not server_calls:
-            break
-        if client_calls:
-            message["tool_calls"] = client_calls
-            choice["finish_reason"] = "tool_calls"
-            break
-        if step == settings.MAX_TOOL_STEPS - 1:
-            # The model ignored tool_choice=none on the last round.
-            message["tool_calls"] = None
-            message["content"] = message.get("content") or "Stopped: too many tool steps without an answer."
-            choice["finish_reason"] = "length"
-            break
-
-        messages.append(message)
-        for c in server_calls:
-            name = c["function"]["name"]
-            t0 = time.monotonic()
-            result = await handlers[name](c["function"].get("arguments"))
-            steps.append({"tool": name, "arguments": c["function"].get("arguments"),
-                          "ok": not result.startswith("error:"),
-                          "ms": int((time.monotonic() - t0) * 1000)})
-            messages.append({"role": "tool", "tool_call_id": c.get("id"), "content": result})
-
-    data["usage"] = usage
-    data["x_tool_steps"] = steps
-    return data
+    return StreamingResponse(relay(), media_type=media_type)
 
 
-def _with_system(messages: list[dict], extra: str) -> list[dict]:
-    """Add text to the caller's system message, or put one first."""
-    first = messages[0] if messages else {}
-    if first.get("role") == "system" and isinstance(first.get("content"), str):
-        return [{**first, "content": f"{first['content']}\n\n{extra}"}, *messages[1:]]
-    return [{"role": "system", "content": extra}, *messages]
-
-
-async def _as_sse(data: dict, include_usage: bool) -> AsyncIterator[bytes]:
-    """A finished completion as an OpenAI-style event stream (for stream=true with server tools)."""
-    base = {"id": data.get("id"), "object": "chat.completion.chunk", "created": data.get("created"),
-            "model": data.get("model")}
-    choice = data["choices"][0]
-    message = choice["message"]
-    delta: dict[str, Any] = {"role": "assistant", "content": message.get("content") or ""}
-    if message.get("tool_calls"):
-        delta["tool_calls"] = [{"index": i, **c} for i, c in enumerate(message["tool_calls"])]
-
-    def event(payload: dict) -> bytes:
-        return f"data: {json.dumps({**base, **payload}, ensure_ascii=False)}\n\n".encode()
-
-    yield event({"choices": [{"index": 0, "delta": delta, "finish_reason": None}]})
-    yield event({"choices": [{"index": 0, "delta": {}, "finish_reason": choice.get("finish_reason")}],
-                 "x_tool_steps": data.get("x_tool_steps", [])})
-    if include_usage:
-        yield event({"choices": [], "usage": data.get("usage")})
-    yield b"data: [DONE]\n\n"
+def error_body(path: str, status: int, message: str) -> dict[str, Any]:
+    """Errors in the shape each client family expects to parse."""
+    if path.startswith("/v1/messages"):
+        kind = {400: "invalid_request_error", 401: "authentication_error", 403: "permission_error",
+                404: "not_found_error", 422: "invalid_request_error", 429: "rate_limit_error",
+                503: "overloaded_error"}.get(status, "api_error")
+        return {"type": "error", "error": {"type": kind, "message": message}}
+    if path.startswith("/v1/"):
+        kind = {401: "invalid_api_key", 403: "permission_denied", 429: "rate_limit_exceeded",
+                503: "server_overloaded"}.get(status, "invalid_request_error")
+        return {"error": {"message": message, "type": kind, "code": status}}
+    if path in ("/api/chat", "/api/tags", "/api/embed"):
+        return {"error": message}  # Ollama's shape
+    return {"detail": message}

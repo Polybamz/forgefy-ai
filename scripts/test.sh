@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# End-to-end check through the public endpoint, the way the applications call it:
+# End-to-end check through the public endpoint, the way your apps call it:
 #   ./scripts/test.sh https://ai.example.com <api-key>
 #
-# Checks: health, that a request without a key is refused, that the key works
-# and which application it belongs to, then runs one of that application's
-# agents on a small sample and shows the answer and the speed.
+# Checks: health, that a request without a key is refused, that the key works,
+# that the models are downloaded, then asks the model a question in OpenAI
+# format and in Ollama format and shows the answers and the time taken.
 set -euo pipefail
 
 [ "$#" -ge 2 ] || { echo "usage: $0 <url> <api-key>" >&2; exit 2; }
@@ -30,32 +30,27 @@ code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$url/api/v1/health"
 pass "requests without a key are refused"
 
 health=$(curl -fsS --max-time 15 -H "Authorization: Bearer $key" "$url/api/v1/health") || fail "the API key was rejected"
-app=$(printf '%s' "$health" | json 'd["app"]' '.app')
+pass "key accepted — app: $(printf '%s' "$health" | json 'd["app"]' '.app')"
 runtime=$(printf '%s' "$health" | json 'd["runtime"]' '.runtime')
-models=$(printf '%s' "$health" | json '" ".join(d["models"])' '.models | join(" ")')
-pass "key accepted — application: $app"
 [ "$runtime" = "ok" ] || fail "model runtime: $runtime"
-[ -n "$models" ] || fail "no models downloaded yet — run ./scripts/pull-models.sh on the server"
-pass "models on the server: $models"
+missing=$(printf '%s' "$health" | json '" ".join(d["models_missing"])' '.models_missing | join(" ")')
+[ -z "$missing" ] || fail "models not downloaded yet: $missing — run ./scripts/pull-models.sh on the server"
+pass "models on offer: $(printf '%s' "$health" | json '" ".join(d["models_offered"])' '.models_offered | join(" ")')"
 
-if [ "$app" = "forgefy" ]; then
-  path="/api/v1/agents/forgefy/requirements"
-  body='{"transcript": "Amina: Patients must be able to book an appointment online.\nPaul: And they need an SMS reminder the day before.\nAmina: Payments can come later, that is nice to have."}'
-  show='d["result"]["summary"]'; show_jq='.result.summary'
-else
-  path="/api/v1/agents/vndor/product-description"
-  body='{"name": "Handwoven raffia tote", "facts": {"material": "natural raffia", "size": "40 x 30 cm"}, "language": "en"}'
-  show='d["result"]["short_description"]'; show_jq='.result.short_description'
-fi
+ask() {  # ask <path> <body> → prints the HTTP body, fails on non-200
+  local reply status
+  reply=$(curl -sS --max-time 900 -H "Authorization: Bearer $key" -H "Content-Type: application/json" \
+    -w '\n%{http_code}' "$url$1" -d "$2")
+  status=$(printf '%s' "$reply" | tail -n1)
+  [ "$status" = "200" ] || fail "$1 returned HTTP $status: $(printf '%s' "$reply" | sed '$d')"
+  printf '%s' "$reply" | sed '$d'
+}
 
-echo "..  running $path (the first call loads the model into memory — can take a minute)"
-reply=$(curl -sS --max-time 900 -H "Authorization: Bearer $key" -H "Content-Type: application/json" \
-  -w '\n%{http_code}' "$url$path" -d "$body")
-status=$(printf '%s' "$reply" | tail -n1)
-reply=$(printf '%s' "$reply" | sed '$d')
-[ "$status" = "200" ] || fail "agent call returned HTTP $status: $reply"
+echo "..  asking in OpenAI format (the first call loads the model into memory — can take a minute)"
+start=$(date +%s)
+reply=$(ask /v1/chat/completions '{"model": "default", "messages": [{"role": "user", "content": "In one sentence: what is a to-do list app?"}]}')
+pass "OpenAI format ($(( $(date +%s) - start ))s): $(printf '%s' "$reply" | json 'd["choices"][0]["message"]["content"].strip()[-160:]' '.choices[0].message.content | .[-160:]')"
 
-pass "answer: $(printf '%s' "$reply" | json "$show" "$show_jq")"
-pass "latency: $(printf '%s' "$reply" | json 'd["latency_ms"]' '.latency_ms') ms, speed: $(printf '%s' "$reply" | json 'd["usage"]["tokens_per_second"]' '.usage.tokens_per_second') tokens/s"
-warnings=$(printf '%s' "$reply" | json '"; ".join(d["warnings"])' '.warnings | join("; ")')
-[ -z "$warnings" ] || echo "!!  warnings: $warnings"
+start=$(date +%s)
+reply=$(ask /api/chat '{"model": "default", "stream": false, "messages": [{"role": "user", "content": "Say hello in French."}]}')
+pass "Ollama format ($(( $(date +%s) - start ))s): $(printf '%s' "$reply" | json 'd["message"]["content"].strip()[-160:]' '.message.content | .[-160:]')"

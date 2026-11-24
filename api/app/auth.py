@@ -1,8 +1,8 @@
 """API keys and per-key rate limits.
 
-A key belongs to one application (forgefy, vndor, …) and one environment, and
-may only call that application's agents. Only a SHA-256 hash of each key is
-stored; the key itself is shown once, when it is created.
+A key belongs to one application (an app of yours, a customer, a tool) and one
+environment, so usage can be reported per application. Only a SHA-256 hash of
+each key is stored; the key itself is shown once, when it is created.
 """
 from __future__ import annotations
 
@@ -50,14 +50,21 @@ class RateLimiter:
         return 0
 
 
+def _presented_key(request: Request) -> str:
+    """The key from 'Authorization: Bearer …' (OpenAI style) or 'x-api-key' (Anthropic style)."""
+    scheme, _, token = request.headers.get("authorization", "").partition(" ")
+    if scheme.lower() == "bearer" and token.strip():
+        return token.strip()
+    return request.headers.get("x-api-key", "").strip()
+
+
 async def authenticate(request: Request) -> ApiKey:
-    header = request.headers.get("authorization", "")
-    scheme, _, token = header.partition(" ")
-    if scheme.lower() != "bearer" or not token.strip():
-        raise HTTPException(401, "Missing API key: send 'Authorization: Bearer <key>'.",
+    token = _presented_key(request)
+    if not token:
+        raise HTTPException(401, "Missing API key: send 'Authorization: Bearer <key>' or 'x-api-key: <key>'.",
                             headers={"WWW-Authenticate": "Bearer"})
     store = request.app.state.store
-    key = await store.find_key(hash_key(token.strip()))
+    key = await store.find_key(hash_key(token))
     if key is None or key.revoked:
         raise HTTPException(401, "Invalid or revoked API key.", headers={"WWW-Authenticate": "Bearer"})
 

@@ -1,73 +1,84 @@
-# AI platform (forgefy-models)
+# Self-hosted models (forgefy-models)
 
-Our centralized AI infrastructure: open-weight models running on our own VPS,
-behind one authenticated API that Forgefy, Vndor and future products share.
-This folder is the **MVP** from the implementation plan (§12) — deliberately small.
+Free, open-weight AI models running on your own VPS, behind API keys, for your
+apps — Forgefy, Vndor, anything else — and for anyone you give a key to.
 
 ```
- Forgefy ─┐                       ┌──────────────── private Docker network ────────────────┐
- Vndor ───┼─ HTTPS + API key ──►  Caddy :443 ──► API (FastAPI) ──► Ollama ──► qwen3:8b
- later …  ┘                       │                    │                                    │
-                                  │                    └──► Postgres (keys, usage log)      │
-                                  └─────────────────────────────────────────────────────────┘
+ Your apps ─┐                     ┌──────────── private Docker network ─────────────────┐
+ Customers ─┼─ HTTPS + API key ─► Caddy :443 ─► API ─► Ollama ─► Qwen · Mistral · Llama
+ Tools ─────┘                     │              │               Gemma · DeepSeek · BGE │
+                                  │              └─► Postgres (keys, usage log)          │
+                                  └──────────────────────────────────────────────────────┘
 ```
+
+## Models
+
+Several families, so each kind of task can use the model that suits it — see
+[MODELS.md](MODELS.md) for licenses and details:
+
+| Role | Default model (24 GB server) | For |
+|---|---|---|
+| `general` | `qwen3:8b` | Most things; tool calling |
+| `fast` | `qwen3:4b` | Quick, simple tasks |
+| `reasoning` | `deepseek-r1:8b` | Maths, planning, step-by-step logic |
+| `vision` | `gemma3:4b` | Reading images |
+| `embed` | `bge-m3` | Embeddings for search and similarity |
+| — | `mistral:7b`, `llama3.1:8b` | Offered by name |
+
+Apps can ask for a model by name (`"model": "mistral:7b"`) or by role
+(`"model": "fast"`). Roles are set in `MODEL_ALIASES`; change which model fills
+a role after benchmarking, and every app follows. Any other model from
+[ollama.com/library](https://ollama.com/library) can be added.
+
+On 24 GB, two models stay in memory at once; asking for another loads it
+(10–60 s on a CPU) and unloads the least recently used.
 
 | Service | Role | Public? |
 |---|---|---|
 | **caddy** | HTTPS with an automatic Let's Encrypt certificate | Yes — 80/443 only |
-| **api** | Our gateway: API keys per application, rate limits, the agents, schema validation, usage log | Through Caddy |
+| **api** | The gateway: API keys, rate limits, a queue in front of the model, usage log | Through Caddy |
 | **ollama** | Runs the models | No |
 | **postgres** | API keys (hashed) and the usage log | No |
 
-Caddy fills the plan's "Nginx" role; it was chosen because it obtains and renews
-certificates by itself.
+Ollama has no authentication of its own, so it is never exposed: everything
+goes through the API, which checks the key, applies the rate limit, queues the
+request and records usage — then passes the request to the model unchanged.
 
-## What the MVP includes
+## What you can call
 
-| Plan item | Here |
-|---|---|
-| One small open-weight model | `qwen3:8b` (Apache-2.0) by default — see [MODELS.md](MODELS.md) |
-| One API with authentication and strict schemas | `api/` — every agent has a typed input and a JSON-schema output that the model is constrained to |
-| Forgefy agent: requirements from a transcript segment | `POST /api/v1/agents/forgefy/requirements` |
-| Vndor agent: factual product description | `POST /api/v1/agents/vndor/product-description` |
-| Separate credentials per application | Keys belong to one app and environment; a Forgefy key cannot call Vndor agents |
-| Usage log | Every call: app, task, model, status, latency, tokens — **never the content** |
-| Benchmark before promising response times | `python -m app.bench` → `benchmarks/` |
-| Hardening, backups, restore | `scripts/harden.sh`, `scripts/backup.sh`, `scripts/restore.sh` |
+Your models, in the three formats AI clients speak:
 
-Beyond the plan's MVP, the same API serves **anything else** too: an
-OpenAI-compatible `/v1` API with system instructions, your own tools,
-streaming, **skills** and server-side **plugins** — see
-[Using it from anything](#using-it-from-anything-the-openai-compatible-api).
+| Format | Endpoint | Use it from |
+|---|---|---|
+| **OpenAI** | `POST /v1/chat/completions` | OpenAI SDKs, LangChain, LlamaIndex, n8n, Open WebUI, Continue, Cline — anything with an "OpenAI-compatible endpoint" setting |
+| **Anthropic** | `POST /v1/messages` | Claude Code, the Claude Agent SDK, Anthropic SDKs |
+| **Ollama** | `POST /api/chat` | Forgefy's backend (it already speaks this), and any Ollama client |
 
-**Deliberately not yet** (plan phases 5–7, add when there's a workload for them):
-background jobs and job IDs (Redis), Prometheus/Grafana, LiteLLM routing,
-LangGraph, external-model fallback, more agents.
+Everything a client sends goes through as-is: **system instructions, its own
+tools and tool results, streaming, JSON output**. So the client keeps full
+control — your app writes its own prompts, and tools like Claude Code keep
+their skills, plugins and MCP servers on their side.
 
-### Guarding against made-up output
+**Embeddings** (text → vectors, for search, recommendations, duplicate
+detection): `POST /v1/embeddings` (OpenAI format) or `POST /api/embed` (Ollama
+format), with `"model": "embed"`.
 
-Models invent things. Each agent checks its answer against its input and
-returns what it finds as `warnings` — it does not hide them:
-
-- **Forgefy requirements:** each requirement carries a `source_quote`, and the
-  API checks that the quote really appears in the transcript (`quote_verified`).
-- **Vndor descriptions:** any number in the description that the merchant did
-  not provide (an invented price, size, delivery time…) is flagged.
-
-The calling application should show warnings to the user and require review
-before saving — the plan's manual-review step.
+Also: `GET /v1/models` and `GET /api/tags` (models and roles on offer, with what
+each can do — tools, thinking, vision), `POST /v1/messages/count_tokens` (an
+estimate), `GET /api/v1/health`, `GET /api/v1/usage`, `GET /healthz` (no key,
+for uptime monitors), and interactive docs at `/docs`.
 
 ## Server
 
-The plan's starting point — a Contabo VPS with **8 vCPU, 24 GB RAM**, NVMe,
-Ubuntu 24.04 — runs this MVP with `qwen3:8b`: about 16 GB for the model runtime
-(`OLLAMA_MEMORY_LIMIT`) and 8 GB for the OS, Postgres and the API.
+A Contabo VPS with **8 vCPU, 24 GB RAM**, NVMe, Ubuntu 24.04 runs the default
+set above: about 16 GB for the model runtime (`OLLAMA_MEMORY_LIMIT`, two models
+loaded at a time) and 8 GB for the OS, Postgres and the API. The models take
+~27 GB of disk.
 
-Expect CPU speeds of a few to ~10 tokens/s for an 8B model: a product
-description in roughly 10–30 s, a requirements extraction in roughly 1–3
-minutes. **Measure on the real server** with the benchmark before promising
-response times. When that's too slow, the plan's next step is a separate GPU
-host for the models (phase 7), keeping this API in front.
+On a CPU, expect a few to ~10 tokens/s from an 8B model — a short answer in
+seconds, a long one in a minute or two. **Measure on the real server** with the
+benchmark before promising response times. When that's too slow, move the
+models to a GPU server and keep this API in front.
 
 ## Setup
 
@@ -88,21 +99,19 @@ curl -fsSL https://get.docker.com | sh          # if Docker isn't installed
 sudo ./scripts/harden.sh                         # firewall, SSH keys only, auto-updates
 ./scripts/setup.sh ai.yourdomain.com             # .env, DB password, model sized to the RAM
 docker compose up -d --build
-./scripts/pull-models.sh                         # downloads qwen3:8b (~5 GB)
+./scripts/pull-models.sh                         # downloads the models (~27 GB)
 ```
 
 `harden.sh` turns SSH password login off **only if** an SSH key is already
 installed, so it can't lock you out. Add yours first from your PC with
 `ssh-copy-id root@YOUR_VPS_IP`, then re-run it.
 
-**4. Create a key per application** — shown once, copy it into that app's secrets:
+**4. Create a key for each app** (or customer) — shown once, copy it into that app's secrets:
 
 ```bash
 docker compose exec api python -m app.cli keys create --app forgefy --env production
 docker compose exec api python -m app.cli keys create --app vndor --env production
 ```
-
-Use separate keys for staging (`--env staging`).
 
 **5. Test** end to end through HTTPS, from the server or your PC:
 
@@ -114,11 +123,11 @@ Use separate keys for staging (`--env staging`).
 .\scripts\test.ps1 -Url https://ai.yourdomain.com -Key <key>
 ```
 
-**6. Benchmark** and keep the report (plan phase 2's definition of done):
+**6. Compare the models** and keep the report — then set which model fills
+each role (`MODEL_ALIASES` in `.env`, then `docker compose up -d`):
 
 ```bash
-docker compose exec api python -m app.bench --runs 3
-# also under load: --concurrent 2
+docker compose exec api python -m app.bench          # every model; takes a while on CPU
 ```
 
 **7. Backups** — schedule daily, and copy them off the server:
@@ -131,203 +140,87 @@ crontab -e
 Back up `.env` too (it holds the database password). Practise a restore once:
 `./scripts/restore.sh backups/<file>`.
 
-## Using the API
+## Using it from your app
 
-Interactive docs with every schema: `https://ai.yourdomain.com/docs`.
+**Forgefy's backend** already talks to Ollama's API, so it needs settings, not
+code — point it at this server with its key:
 
-```bash
-curl https://ai.yourdomain.com/api/v1/agents/vndor/product-description \
-  -H "Authorization: Bearer $VNDOR_KEY" -H "Content-Type: application/json" \
-  -d '{"name": "Savon au karité", "facts": {"poids": "150 g"}, "language": "fr", "tone": "elegant"}'
+```env
+OLLAMA_URL=https://ai.yourdomain.com
+OLLAMA_API_KEY=aik_…          # a key made with --app forgefy
+OLLAMA_MODEL=qwen3:8b
+BP_MODEL=Qwen3                # and/or BUILD_MODEL=Qwen3
 ```
 
-Every agent answers with the same envelope:
-
-```json
-{
-  "request_id": "…", "agent": "vndor.product-description", "agent_version": "2026-11-23.1",
-  "model": "qwen3:8b", "latency_ms": 14210,
-  "warnings": [],
-  "usage": {"queue_ms": 0, "prompt_tokens": 180, "completion_tokens": 160, "tokens_per_second": 9.8, "attempts": 1},
-  "result": {"short_description": "…", "long_description": "…", "highlights": ["…"]}
-}
-```
-
-| Endpoint | |
-|---|---|
-| `POST /api/v1/agents/forgefy/requirements` | `{"transcript", "project_name"?, "language": "auto"\|"en"\|"fr"}` — up to `MAX_TRANSCRIPT_CHARS` (20,000); send longer meetings in segments |
-| `POST /api/v1/agents/vndor/product-description` | `{"name", "category"?, "facts": {…}, "price"?, "notes"?, "language", "tone", "max_words"}` |
-| `GET /api/v1/health` | Which app the key belongs to, runtime status, models, this app's agents |
-| `GET /api/v1/usage?days=7` | This app's requests, latency and tokens by task and status |
-| `GET /healthz` | Liveness, no key — for uptime monitors |
-
-| Status | Meaning | What the caller should do |
-|---|---|---|
-| 401 | Missing, wrong or revoked key | Fix the key |
-| 403 | Key belongs to another application | Use that app's key |
-| 422 | Input invalid or too long | Fix the request (the detail says what) |
-| 429 | Rate limit (per key, per minute) | Wait `Retry-After` seconds |
-| 502 | The model's answer didn't match the schema, even after one retry | Retry once; if persistent, report it |
-| 503 | Model busy (queue full) or unavailable | Wait `Retry-After` and retry |
-
-Calls are processed one at a time on a CPU server (`OLLAMA_NUM_PARALLEL=1`);
-others wait up to `QUEUE_TIMEOUT_SECONDS` for their turn, then get 503.
-
-## Using it from anything: the OpenAI-compatible API
-
-Besides the product agents, the platform offers a general chat API in OpenAI's
-format at `https://ai.yourdomain.com/v1`. Anything that can talk to OpenAI —
-the OpenAI SDKs, LangChain, LlamaIndex, n8n, Open WebUI, editor extensions,
-your own scripts — can use your models by changing the base URL and key.
+**Any app, OpenAI style** (Python shown; every language has an OpenAI SDK):
 
 ```python
 from openai import OpenAI
 
 client = OpenAI(base_url="https://ai.yourdomain.com/v1", api_key="aik_…")
 reply = client.chat.completions.create(
-    model="qwen3:8b",                      # or "default"
+    model="qwen3:8b",
     messages=[
-        {"role": "system", "content": "You are a concise assistant for a bakery."},
-        {"role": "user", "content": "Suggest three names for a new croissant."},
+        {"role": "system", "content": "You write product descriptions for small shops."},
+        {"role": "user", "content": "Raffia tote bag, natural raffia, 40 x 30 cm."},
     ],
 )
 print(reply.choices[0].message.content)
 ```
 
-| Feature | How |
-|---|---|
-| System instructions | A `system` message, as usual |
-| Your own tools | `tools=[…]` as usual. The model's `tool_calls` come back to you; run them and send the results as `tool` messages |
-| Streaming | `stream=True` |
-| JSON output | `response_format={"type": "json_object"}` or a JSON schema |
-| Skills | `extra_body={"skills": ["name"]}` or `"all"` — see below |
-| Plugins | `extra_body={"plugins": ["calculator", "clock"]}` — see below |
-
-`GET /v1/models` lists the models on offer (`CHAT_MODELS`), `GET /v1/skills` the
-skills and `GET /v1/plugins` the plugins your key may use.
-
-**Qwen3 thinks before answering by default**, which on a CPU server roughly
-doubles the time. Add `/no_think` to your message (or system prompt) when you
-don't need it.
-
-### Keys for other tools
+**Claude Code** on your model:
 
 ```bash
-# a key for scripts/integrations: chat + skills, no plugins
-docker compose exec api python -m app.cli keys create --app scripts --env production
-# with plugins
-docker compose exec api python -m app.cli keys create --app n8n --env production --plugin calculator --plugin web
-# change a key's permissions later (replaces them)
-docker compose exec api python -m app.cli keys scopes aik_XXXXXXXX chat skills plugin:clock
+export ANTHROPIC_BASE_URL=https://ai.yourdomain.com
+export ANTHROPIC_API_KEY=aik_…
+claude
 ```
 
-Scopes: `agents` (Forgefy/Vndor agents — only for keys of those apps), `chat`,
-`skills`, `plugin:<name>`, `plugin:*`.
+Claude Code asks for `claude-…` model names; `MODEL_ALIASES` (set by
+`setup.sh` to `claude-*=<your model>`) runs them on yours. It also sends very
+large prompts — raise `NUM_CTX` to 32768 for it (costs RAM).
 
-## Skills
+**Tools with a settings screen** (Open WebUI, n8n, Continue…): provider
+"OpenAI-compatible", base URL `https://ai.yourdomain.com/v1`, the key, model
+`qwen3:8b`.
 
-A skill is a folder of instructions the model reads **when a task needs it** —
-the same `SKILL.md` format as [skills.sh](https://skills.sh) and Claude's Agent
-Skills, so many published skills work here as they are.
+### Things to know
 
-```
-skills/
-  cameroon-business-writing/       ← included as an example
-    SKILL.md                       ← name + description (frontmatter), then instructions
-    examples.md                    ← extra files the instructions can point to
-```
+- **Models on offer** are those in `CHAT_MODELS` and `EMBEDDING_MODELS`, plus
+  the role names in `MODEL_ALIASES`. A request for anything else gets a clear
+  error listing what is available.
+- **Not every model can do everything.** Gemma can read images but (in Ollama)
+  not call tools; DeepSeek-R1 always reasons at length; Mistral and Llama don't
+  have a thinking mode. `GET /v1/models` lists each model's capabilities, so an
+  app can check before relying on one.
+- **Thinking vs speed.** Qwen3 thinks before answering, which roughly doubles
+  response time on a CPU — but without it, small models call tools far less
+  reliably and make more factual mistakes. The default (`THINKING=model`)
+  leaves it on. Clients can turn it off per request: `reasoning_effort: "none"`
+  (OpenAI), `thinking: {"type": "disabled"}` (Anthropic), `think: false` (Ollama).
+- **One request at a time** on a CPU server (`OLLAMA_NUM_PARALLEL=1`); others
+  wait up to `QUEUE_TIMEOUT_SECONDS`, then get `503` with `Retry-After`.
 
-When a request enables skills, the model sees only each skill's name and
-description, plus a `load_skill` tool. If the request matches a skill, it loads
-the full instructions (and any extra file it needs), then answers. Many skills
-can be on offer without filling the context window.
-
-**Install a skill:** put its folder in `skills/`, then `docker compose restart api`.
-**Write one:** see the example's `SKILL.md`. The `description` decides when the
-model uses it — say what it's for and when to use it.
-
-Skills are text the model follows, so treat a downloaded one like code: read it
-before installing.
-
-## Plugins
-
-A plugin gives the model **tools that run on the server**: when the model calls
-one, the platform runs it, gives the model the result, and continues until the
-model answers. The steps taken are listed in the reply's `x_tool_steps`.
-
-Included:
-
-| Plugin | Tool | What it does |
+| Status | Meaning | What the caller should do |
 |---|---|---|
-| `calculator` | `calculator__calculate` | Exact arithmetic (small models get numbers wrong) — parsed safely, never `eval` |
-| `clock` | `clock__now` | Current date and time in any time zone |
-| `web` | `web__fetch` | Read a public web page. Refuses private and internal addresses, so it can't reach the database, the model runtime or cloud metadata. Grant it carefully |
-
-### Writing a plugin
-
-Copy `plugins/_template` to `plugins/<name>` (lowercase), and write functions:
-
-```python
-from typing import Annotated
-from pydantic import Field
-from app.plugins.sdk import tool
-
-DESCRIPTION = "Order lookups for the shop"
-
-@tool
-async def order_status(order_id: Annotated[str, Field(description="e.g. VN-1042")]) -> dict:
-    """Where an order is. Use when a customer asks about their order."""
-    ...  # call your database or API here
-    return {"order_id": order_id, "status": "shipped"}
-```
-
-- The **docstring** is what the model reads to decide when to call it.
-- The **type hints** become the tool's JSON schema; arguments are validated
-  before your function runs.
-- Return text or anything JSON-serialisable; **raise** to report an error to the
-  model. Sync or async both work. Calls time out after `TOOL_TIMEOUT_SECONDS`.
-- Read secrets from environment variables, never from code or prompts.
-
-Check it, then load it:
-
-```bash
-docker compose exec api python -m app.plugins.check plugins/<name>
-docker compose exec api python -m app.plugins.check plugins/<name> order_status '{"order_id": "VN-1042"}'
-docker compose restart api
-docker compose exec api python -m app.cli keys scopes aik_XXXXXXXX chat skills plugin:<name>
-```
-
-**Plugins run inside the API with its permissions** — install only code you
-have read. Callers can only *use* plugins: adding one needs access to the
-server, and each key must be granted each plugin.
-
-### How tools combine
-
-- Your own tools (`tools=[…]`) always come back to you to run, plugins or not.
-- With skills or plugins enabled, the server runs its own tool rounds (at most
-  `MAX_TOOL_STEPS`, then the model must answer). If the model calls one of
-  your tools in the same round as a server tool, only your calls are returned.
-- With skills or plugins, `stream=True` sends the finished answer as a stream
-  at the end, rather than token by token.
+| 401 | Missing, wrong or revoked key | Fix the key |
+| 422 | Bad request, or a model that isn't offered (the message lists what is) | Fix the request |
+| 429 | Rate limit (per key, per minute) | Wait `Retry-After` seconds |
+| 503 | Model busy (queue full) or unavailable | Wait `Retry-After` and retry |
 
 ## Operating it
 
 | Task | Command |
 |---|---|
 | Keys | `docker compose exec api python -m app.cli keys list` · `keys revoke aik_XXXXXXXX` |
-| Usage, all apps | `docker compose exec api python -m app.cli usage --days 30` |
+| Usage per app | `docker compose exec api python -m app.cli usage --days 30` |
 | Logs | `docker compose logs -f api` |
 | What's in memory | `docker compose exec ollama ollama ps` |
-| Update | `git pull` (or copy the folder), then `docker compose up -d --build` |
-| Change model | Pull it, record it in [MODELS.md](MODELS.md), set `DEFAULT_MODEL` (or `MODEL_OVERRIDES` per agent), `docker compose up -d` |
+| Add a model | Check its license, add it to `MODELS` and `CHAT_MODELS` in `.env`, `./scripts/pull-models.sh`, record it in [MODELS.md](MODELS.md), `docker compose up -d` |
+| Change a role | Edit `MODEL_ALIASES` in `.env` (e.g. `fast=mistral:7b`), `docker compose up -d` |
+| Update | Copy the folder (or `git pull`), then `docker compose up -d --build` |
 
-**Rotating a key:** create a new one, put it in the application, deploy, then
-revoke the old one.
-
-**Adding an agent:** write a module in `api/app/agents/` like the two existing
-ones (input model, output model, prompt, `finalize` checks), register it in
-`api/app/agents/__init__.py`, add tests, and bump `version` whenever its prompt
-or schema changes — the version is logged with every call.
+**Rotating a key:** create a new one, put it in the app, deploy, then revoke the old one.
 
 ## Development
 
@@ -348,8 +241,8 @@ Postgres nor Ollama.
 - Only Caddy publishes ports. Docker bypasses `ufw` for published ports, so
   never add `ports:` to `ollama`, `postgres` or `api`.
 - Keys are stored as SHA-256 hashes; a lost key cannot be recovered, only replaced.
-- The usage log never contains prompts, transcripts or outputs. Applications
-  should send only the fields a task needs (plan §9).
+- The usage log never contains prompts or answers — only who, when, which
+  model, how long, how many tokens.
 - `DOMAIN=:80` (plain HTTP) is for a first test without a domain only.
-- Before processing health data (COA), do the separate assessment the plan calls for.
-"# forgefy-ai" 
+- Check each model's license before using it in a paid product ([MODELS.md](MODELS.md)).
+"# forgefy-ai"

@@ -1,7 +1,8 @@
-# The AI platform: one public entry point, everything else private.
+# Self-hosted models behind API keys: one public entry point, everything else private.
 #
 #   caddy     HTTPS on 80/443 (automatic Let's Encrypt certificate for DOMAIN)
-#   api       our FastAPI gateway — API keys, rate limits, agents, usage log
+#   api       the gateway — API keys, rate limits, queue, usage log; OpenAI,
+#             Anthropic and Ollama-format endpoints
 #   ollama    the model runtime; reachable only by the api
 #   postgres  API keys (hashed) and the usage log
 #
@@ -39,22 +40,17 @@ services:
       DATABASE_URL: postgresql://ai:${POSTGRES_PASSWORD:?run scripts/setup.sh}@postgres:5432/ai
       OLLAMA_URL: http://ollama:11434
       DEFAULT_MODEL: ${DEFAULT_MODEL:-qwen3:8b}
-      MODEL_OVERRIDES: ${MODEL_OVERRIDES:-}
       MODEL_CONCURRENCY: ${OLLAMA_NUM_PARALLEL:-1}
       QUEUE_TIMEOUT_SECONDS: ${QUEUE_TIMEOUT_SECONDS:-120}
-      NUM_CTX: ${NUM_CTX:-12288}
       DEFAULT_RATE_LIMIT_PER_MINUTE: ${DEFAULT_RATE_LIMIT_PER_MINUTE:-30}
-      MAX_TRANSCRIPT_CHARS: ${MAX_TRANSCRIPT_CHARS:-20000}
       DOCS_ENABLED: ${DOCS_ENABLED:-true}
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-}
       CHAT_MODELS: ${CHAT_MODELS:-}
-      MAX_TOOL_STEPS: ${MAX_TOOL_STEPS:-8}
-      TOOL_TIMEOUT_SECONDS: ${TOOL_TIMEOUT_SECONDS:-30}
+      EMBEDDING_MODELS: ${EMBEDDING_MODELS:-}
+      MODEL_ALIASES: ${MODEL_ALIASES:-}
+      THINKING: ${THINKING:-model}
     volumes:
       - ./benchmarks:/srv/benchmarks
-      # Skills and plugins are installed by putting folders here, then
-      # `docker compose restart api`. Read-only: callers can use them, never change them.
-      - ./skills:/srv/skills:ro
-      - ./plugins:/srv/plugins:ro
 
   ollama:
     image: ollama/ollama:${OLLAMA_VERSION:-latest}
@@ -66,7 +62,9 @@ services:
       # Requests served at once. Each costs a full context of memory, and on a
       # CPU server more parallelism only splits the same cores.
       OLLAMA_NUM_PARALLEL: ${OLLAMA_NUM_PARALLEL:-1}
-      OLLAMA_MAX_LOADED_MODELS: ${OLLAMA_MAX_LOADED_MODELS:-1}
+      # Models kept in memory at once; others load on demand and push out the
+      # least recently used.
+      OLLAMA_MAX_LOADED_MODELS: ${OLLAMA_MAX_LOADED_MODELS:-2}
       OLLAMA_CONTEXT_LENGTH: ${NUM_CTX:-12288}
       OLLAMA_FLASH_ATTENTION: ${OLLAMA_FLASH_ATTENTION:-1}
     # Hard cap so a model that is too big fails to load instead of pushing

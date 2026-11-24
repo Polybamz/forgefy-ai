@@ -11,10 +11,8 @@ import pytest
 
 from app.auth import new_key
 from app.config import Settings
-from app.llm import ChatResult, ModelBusy
+from app.llm import ModelBusy
 from app.main import create_app
-from app.plugins import load_plugins
-from app.skills import load_skills
 from app.store import MemoryStore
 
 PROJECT = Path(__file__).resolve().parents[2]
@@ -24,43 +22,40 @@ class FakeLLM:
     """Stands in for Ollama: returns queued replies and records each call."""
 
     def __init__(self) -> None:
-        self.replies: list[Any] = []
-        self.calls: list[dict] = []
-        self.models = ["qwen3:8b"]
-        # OpenAI-format chat
+        self.models = ["qwen3:8b", "mistral:latest", "bge-m3:latest"]
+        self.caps = {
+            "qwen3:8b": {"completion", "tools", "thinking"},
+            "qwen3:4b": {"completion", "tools", "thinking"},
+            "mistral": {"completion", "tools"},
+            "bge-m3": {"embedding"},
+        }
         self.chat_replies: list[Any] = []
-        self.chat_calls: list[dict] = []
+        self.chat_calls: list[dict] = []  # {"path": …, "body": …}
         self.stream_lines: list[bytes] = []
 
     @asynccontextmanager
     async def slot(self):
         yield 0
 
-    async def chat_completions(self, body: dict) -> dict:
-        self.chat_calls.append(copy.deepcopy(body))
+    async def forward(self, path: str, body: dict) -> dict:
+        self.chat_calls.append({"path": path, "body": copy.deepcopy(body)})
         item = self.chat_replies.pop(0)
         if isinstance(item, Exception):
             raise item
         return copy.deepcopy(item)
 
-    async def stream_chat_completions(self, body: dict):
-        self.chat_calls.append(copy.deepcopy(body))
+    async def forward_stream(self, path: str, body: dict):
+        self.chat_calls.append({"path": path, "body": copy.deepcopy(body)})
         for line in self.stream_lines:
             if isinstance(line, Exception):
                 raise line
             yield line
 
-    def reply(self, *items: Any) -> None:
-        """Queue replies: a dict (sent as JSON), a raw string, or an exception to raise."""
-        self.replies.extend(items)
+    async def capabilities(self, model: str) -> set[str]:
+        return self.caps.get(model, set())
 
-    async def chat_json(self, model, messages, schema, *, num_predict, temperature):
-        self.calls.append({"model": model, "messages": messages, "schema": schema})
-        item = self.replies.pop(0)
-        if isinstance(item, Exception):
-            raise item
-        content = item if isinstance(item, str) else json.dumps(item)
-        return ChatResult(content=content, queue_ms=5, prompt_tokens=100, completion_tokens=50, generation_ms=2000)
+    async def installed_models(self):
+        return [{"name": m, "size": 5 * 1024**3} for m in self.models]
 
     async def list_models(self):
         return self.models
@@ -84,24 +79,14 @@ def store() -> MemoryStore:
 
 @pytest.fixture
 def settings() -> Settings:
-    return Settings(STORE="memory", DEFAULT_MODEL="qwen3:8b", MAX_TRANSCRIPT_CHARS=2000,
-                    CHAT_MODELS="qwen3:8b,qwen3:4b", MAX_TOOL_STEPS=4)
-
-
-@pytest.fixture(scope="session")
-def project_skills():
-    """The skills and plugins shipped in the project folder."""
-    return load_skills(PROJECT / "skills")
-
-
-@pytest.fixture(scope="session")
-def project_plugins():
-    return load_plugins(PROJECT / "plugins")
+    return Settings(STORE="memory", DEFAULT_MODEL="qwen3:8b",
+                    CHAT_MODELS="qwen3:8b,qwen3:4b,mistral", EMBEDDING_MODELS="bge-m3",
+                    MODEL_ALIASES="fast=qwen3:4b,embed=bge-m3,claude-*=qwen3:8b", THINKING="off")
 
 
 @pytest.fixture
-async def client(settings, store, llm, project_skills, project_plugins):
-    app = create_app(settings=settings, store=store, llm=llm, skills=project_skills, plugins=project_plugins)
+async def client(settings, store, llm):
+    app = create_app(settings=settings, store=store, llm=llm)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
         yield c

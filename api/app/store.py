@@ -14,13 +14,11 @@ from typing import Any, Protocol
 
 logger = logging.getLogger(__name__)
 
-# Applications with their own agents. Keys can also be made for any other
-# name (a script, n8n, an editor…) to use the general chat API.
-APPS = ("forgefy", "vndor")
 ENVIRONMENTS = ("production", "staging", "development")
-# What a key may use: its app's agents, the OpenAI-compatible chat API, skills,
-# and plugins — each plugin granted by name ("plugin:web") or all ("plugin:*").
-DEFAULT_SCOPES = ("agents", "chat", "skills")
+# What a key may use. One scope today — the model APIs — kept as a list so
+# finer permissions can be added without changing the key table.
+SCOPES = ("chat",)
+DEFAULT_SCOPES = SCOPES
 
 
 @dataclass
@@ -41,9 +39,7 @@ class ApiKey:
         return self.revoked_at is not None
 
     def allows(self, scope: str) -> bool:
-        if scope in self.scopes:
-            return True
-        return scope.startswith("plugin:") and "plugin:*" in self.scopes
+        return scope in self.scopes
 
 
 @dataclass
@@ -78,6 +74,21 @@ class Store(Protocol):
     async def touch_key(self, key_id: int) -> None: ...
     async def log_usage(self, record: UsageRecord) -> None: ...
     async def usage_summary(self, app: str | None, days: int) -> list[dict[str, Any]]: ...
+    async def usage_daily(self, days: int) -> list[dict[str, Any]]: ...
+
+
+def _daily(records: list[UsageRecord]) -> list[dict[str, Any]]:
+    """Per day (UTC) and app: requests, errors and tokens — for the usage chart."""
+    groups: dict[tuple[str, str], list[UsageRecord]] = defaultdict(list)
+    for r in records:
+        groups[(r.created_at.astimezone(UTC).strftime("%Y-%m-%d"), r.app)].append(r)
+    return [
+        {"day": day, "app": app, "requests": len(items),
+         "errors": sum(1 for i in items if i.status != "ok"),
+         "prompt_tokens": sum(i.prompt_tokens or 0 for i in items),
+         "completion_tokens": sum(i.completion_tokens or 0 for i in items)}
+        for (day, app), items in sorted(groups.items())
+    ]
 
 
 def _summarize(records: list[UsageRecord]) -> list[dict[str, Any]]:
@@ -154,6 +165,10 @@ class MemoryStore:
         since = datetime.now(UTC) - timedelta(days=days)
         return _summarize([r for r in self.usage if r.created_at >= since and (app is None or r.app == app)])
 
+    async def usage_daily(self, days):
+        since = datetime.now(UTC) - timedelta(days=days)
+        return _daily([r for r in self.usage if r.created_at >= since])
+
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS api_keys (
@@ -186,7 +201,7 @@ CREATE TABLE IF NOT EXISTS usage_log (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS usage_log_app_created ON usage_log (app, created_at);
-ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS scopes TEXT[] NOT NULL DEFAULT '{agents,chat,skills}';
+ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS scopes TEXT[] NOT NULL DEFAULT '{chat}';
 """
 
 _KEY_COLUMNS = (
@@ -277,6 +292,22 @@ class PostgresStore:
             GROUP BY app, task, status ORDER BY app, task, status
             """,
             days, app,
+        )
+        return [dict(r) for r in rows]
+
+    async def usage_daily(self, days):
+        rows = await self._pool.fetch(
+            """
+            SELECT to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day, app,
+                   count(*)::int AS requests,
+                   count(*) FILTER (WHERE status <> 'ok')::int AS errors,
+                   coalesce(sum(prompt_tokens), 0)::int AS prompt_tokens,
+                   coalesce(sum(completion_tokens), 0)::int AS completion_tokens
+            FROM usage_log
+            WHERE created_at >= now() - make_interval(days => $1)
+            GROUP BY day, app ORDER BY day, app
+            """,
+            days,
         )
         return [dict(r) for r in rows]
 

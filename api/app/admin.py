@@ -99,6 +99,7 @@ async def overview(request: Request) -> dict[str, Any]:
                    for m in loaded_unique],
         "roles": {**settings.role_names("chat"), **settings.role_names("embed")},
         "default_model": settings.DEFAULT_MODEL,
+        "speech": await request.app.state.speech.health(),
         "keys_active": sum(1 for k in keys if not k.revoked),
         "last_24h": {
             "requests": sum(r["requests"] for r in rows),
@@ -207,3 +208,16 @@ async def playground(request: Request, body: dict = Body(...)):
     return await _forward(_ADMIN, request, body, "/api/chat", "playground",
                           lambda b: b.setdefault("think", False), _ollama_usage,
                           stream_by_default=True, media_type="application/x-ndjson")
+@router.get("/docs")
+async def docs() -> dict[str, Any]:
+    """ Return documentation for all API endpoints with code examples on how to use them. """
+    from fastapi.openapi.utils import get_openapi
+    from fastapi.responses import JSONResponse
+
+    openapi_schema = get_openapi(
+        title="Forgefy Admin API",
+        version="1.0.0",
+        description="Admin API for managing models, keys, and usage statistics.",
+        routes=router.routes,
+    )
+    return JSONResponse(openapi_schema)

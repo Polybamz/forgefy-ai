@@ -67,9 +67,38 @@ class FakeLLM:
         pass
 
 
+class FakeSpeech:
+    """Stands in for the speech service."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+        self.result: Any = {
+            "text": "Bonjour à tous. On commence.", "language": "fr", "duration": 3.25, "model": "large-v3-turbo",
+            "segments": [{"id": 0, "start": 0.0, "end": 1.5, "text": "Bonjour à tous."},
+                         {"id": 1, "start": 1.5, "end": 3.25, "text": "On commence."}],
+        }
+
+    async def transcribe(self, filename, content, content_type, **kwargs):
+        self.calls.append({"filename": filename, "size": len(content), "content_type": content_type, **kwargs})
+        if isinstance(self.result, Exception):
+            raise self.result
+        return self.result
+
+    async def health(self):
+        return {"status": "ok", "model": "large-v3-turbo", "loaded": False, "busy": False}
+
+    async def close(self):
+        pass
+
+
 @pytest.fixture
 def llm() -> FakeLLM:
     return FakeLLM()
+
+
+@pytest.fixture
+def speech() -> FakeSpeech:
+    return FakeSpeech()
 
 
 @pytest.fixture
@@ -85,8 +114,8 @@ def settings() -> Settings:
 
 
 @pytest.fixture
-async def client(settings, store, llm):
-    app = create_app(settings=settings, store=store, llm=llm)
+async def client(settings, store, llm, speech):
+    app = create_app(settings=settings, store=store, llm=llm, speech=speech)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
         yield c

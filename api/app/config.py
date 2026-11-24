@@ -47,6 +47,16 @@ class Settings(BaseSettings):
 
     DEFAULT_RATE_LIMIT_PER_MINUTE: int = 30
     DOCS_ENABLED: bool = True
+    # Speech-to-text (the speech service, Whisper). WHISPER_MODEL is what the
+    # speech service runs; it's here so usage is recorded under its name.
+    SPEECH_URL: str = "http://speech:8000"
+    WHISPER_MODEL: str = "large-v3-turbo"
+    MAX_AUDIO_MB: int = 100
+    # A CPU transcribes roughly in real time: a 20-minute recording takes ~20
+    # minutes, and the next one waits for it.
+    SPEECH_TIMEOUT_SECONDS: float = 1800.0
+    SPEECH_QUEUE_TIMEOUT_SECONDS: float = 600.0
+
     # Password for the admin console at /admin (keys, usage, models,
     # playground). Blank = the console's API is switched off. setup.sh
     # generates a long random one.

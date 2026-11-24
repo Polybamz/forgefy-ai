@@ -3,18 +3,34 @@
 # DOMAIN=:80 serves plain HTTP for a first test without a domain — never for
 # real traffic, the API keys would cross the internet unencrypted.
 #
-# Only the API is reachable from here. The model runtime and the database have
-# no route in: applications go through the API's keys, limits and usage log.
+# Only the API is reachable from here. The model runtime, the speech service
+# and the database have no route in: applications go through the API's keys,
+# limits and usage log.
 {$DOMAIN} {
-	request_body {
-		max_size 2MB
+	# Audio uploads are big and slow to transcribe on a CPU.
+	@audio path /v1/audio/*
+	handle @audio {
+		request_body {
+			max_size 110MB
+		}
+		reverse_proxy api:8000 {
+			transport http {
+				response_header_timeout 35m
+				read_timeout 35m
+			}
+		}
 	}
 
-	reverse_proxy api:8000 {
-		transport http {
-			# Agent calls on a CPU server can take minutes.
-			response_header_timeout 15m
-			read_timeout 15m
+	handle {
+		request_body {
+			max_size 2MB
+		}
+		reverse_proxy api:8000 {
+			transport http {
+				# Model calls on a CPU server can take minutes.
+				response_header_timeout 15m
+				read_timeout 15m
+			}
 		}
 	}
 

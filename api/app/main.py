@@ -5,6 +5,7 @@
     GET  /api/v1/usage?days=7          the key's application's usage
     /v1/…                              OpenAI- and Anthropic-compatible APIs (app/chat.py)
     /api/chat, /api/tags               Ollama's own API (app/chat.py)
+    /v1/audio/…                        speech-to-text, OpenAI-compatible (app/speech.py)
     /admin                             the admin console (app/static/admin, API in app/admin.py)
 
 Every model call is logged to the usage table — metadata only, never the content.
@@ -28,6 +29,8 @@ from app.chat import error_body, native_router
 from app.chat import router as chat_router
 from app.config import Settings, get_settings
 from app.llm import OllamaClient
+from app.speech import SpeechClient
+from app.speech import router as speech_router
 from app.store import ApiKey, Store, make_store
 
 logger = logging.getLogger("ai-api")
@@ -39,6 +42,7 @@ _STATIC = Path(__file__).parent / "static"
 
 def create_app(
     settings: Settings | None = None, store: Store | None = None, llm: OllamaClient | None = None,
+    speech: SpeechClient | None = None,
 ) -> FastAPI:
     settings = settings or get_settings()
 
@@ -47,6 +51,7 @@ def create_app(
         await app.state.store.init()
         yield
         await app.state.llm.close()
+        await app.state.speech.close()
         await app.state.store.close()
 
     app = FastAPI(
@@ -65,9 +70,15 @@ def create_app(
         queue_timeout=settings.QUEUE_TIMEOUT_SECONDS,
         timeout=settings.MODEL_TIMEOUT_SECONDS,
     )
+    app.state.speech = speech or SpeechClient(
+        settings.SPEECH_URL,
+        timeout=settings.SPEECH_TIMEOUT_SECONDS,
+        queue_timeout=settings.SPEECH_QUEUE_TIMEOUT_SECONDS,
+    )
     app.state.rate_limiter = RateLimiter()
     app.include_router(chat_router)
     app.include_router(native_router)
+    app.include_router(speech_router)
     app.include_router(admin_router)
 
     # The admin console: static files, no build step. Its API is admin_router.
@@ -109,6 +120,7 @@ def create_app(
             "app": caller.app, "environment": caller.environment, "key": caller.prefix,
             "runtime": runtime, "models_offered": offered,
             "roles": {**settings.role_names("chat"), **settings.role_names("embed")},
+            "speech": await app.state.speech.health(),
             "models_missing": [m for m in offered if m not in have] if runtime == "ok" else [],
         }
 

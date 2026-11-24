@@ -48,31 +48,38 @@ else
   say "No NVIDIA GPU — CPU only. RAM: ${ram_gb} GB, CPUs: $cpus"
 fi
 
-# The model runtime shares the server with Postgres, the API and the OS:
-# leave them ~8 GB and give the runtime the rest.
-mem_limit=$(( ram_gb > 12 ? ram_gb - 8 : 4 ))
+# The model runtime shares the server with the speech service (3 GB), Postgres,
+# the API and the OS: leave them ~10 GB and give the runtime the rest.
+mem_limit=$(( ram_gb > 14 ? ram_gb - 10 : 4 ))
+# Speech gets half the cores, so transcribing a recording doesn't stall chat.
+speech_cpus=$(( cpus / 2 > 2 ? cpus / 2 : 2 ))
 
 # Pick a set of models from several families (MODELS.md) sized to that limit.
-# Each role — general, fast, reasoning, vision — gets the best that fits;
-# "others" are offered by name for apps that want them.
+# Each role — general, fast, code, reasoning, vision — gets the best that
+# fits; "others" are offered by name for apps that want them. The big coding
+# and assistant models (qwen3-coder:30b, devstral:24b, gpt-oss:20b) are 14-19 GB
+# each, so they only appear where two of them fit in memory at once.
 embed="bge-m3"
 loaded=2
-if { [ -n "$gpu_name" ] && [ "$vram_gb" -ge 20 ]; } || [ "$mem_limit" -ge 22 ]; then
-  general="qwen3:14b"; fast="qwen3:4b"; reasoning="deepseek-r1:14b"; vision="gemma3:12b"
-  others="mistral-nemo:12b llama3.1:8b"
+if { [ -n "$gpu_name" ] && [ "$vram_gb" -ge 40 ]; } || [ "$mem_limit" -ge 40 ]; then
+  general="qwen3:14b"; fast="qwen3:4b"; code="qwen3-coder:30b"; reasoning="deepseek-r1:14b"; vision="gemma3:12b"
+  others="devstral:24b gpt-oss:20b phi4:14b mistral-nemo:12b"
+elif { [ -n "$gpu_name" ] && [ "$vram_gb" -ge 20 ]; } || [ "$mem_limit" -ge 22 ]; then
+  general="qwen3:14b"; fast="qwen3:4b"; code="qwen2.5-coder:14b"; reasoning="deepseek-r1:14b"; vision="gemma3:12b"
+  others="phi4:14b mistral-nemo:12b"
 elif { [ -n "$gpu_name" ] && [ "$vram_gb" -ge 10 ]; } || [ "$mem_limit" -ge 8 ]; then
-  general="qwen3:8b"; fast="qwen3:4b"; reasoning="deepseek-r1:8b"; vision="gemma3:4b"
-  others="mistral:7b llama3.1:8b"
+  general="qwen3:8b"; fast="qwen3:4b"; code="qwen2.5-coder:7b"; reasoning="deepseek-r1:8b"; vision="gemma3:4b"
+  others="mistral:7b llama3.1:8b phi4-mini:3.8b"
 elif [ "$mem_limit" -ge 4 ]; then
-  general="qwen3:4b"; fast="qwen3:1.7b"; reasoning="deepseek-r1:1.5b"; vision="gemma3:4b"
-  others=""; loaded=1
+  general="qwen3:4b"; fast="qwen3:1.7b"; code="qwen2.5-coder:3b"; reasoning="deepseek-r1:1.5b"; vision="gemma3:4b"
+  others="phi4-mini:3.8b"; loaded=1
   warn "Little memory: only small models fit, one at a time — expect noticeably weaker answers."
 else
   die "Under ~8 GB RAM is too small to run a useful model next to the other services."
 fi
-chat_models=$(printf '%s\n' "$general" "$fast" $others "$reasoning" "$vision" | awk '!seen[$0]++' | paste -sd, -)
+chat_models=$(printf '%s\n' "$general" "$fast" "$code" $others "$reasoning" "$vision" | awk '!seen[$0]++' | paste -sd, -)
 all_models="$(echo "$chat_models" | tr , ' ') $embed"
-aliases="general=$general,fast=$fast,reasoning=$reasoning,vision=$vision,embed=$embed,claude-*=$general"
+aliases="general=$general,fast=$fast,code=$code,reasoning=$reasoning,vision=$vision,embed=$embed,claude-*=$general"
 say "Suggested models: ${chat_models//,/, } + $embed (embeddings); memory limit ${mem_limit}g"
 
 # ── 3. .env ──────────────────────────────────────────────────────────────────
@@ -85,6 +92,7 @@ if [ ! -f .env ]; then
   set_env MODEL_ALIASES "$aliases"
   set_env OLLAMA_MEMORY_LIMIT "${mem_limit}g"
   set_env OLLAMA_MAX_LOADED_MODELS "$loaded"
+  set_env SPEECH_CPUS "$speech_cpus"
   say "Created .env with the suggested models, roles and memory limit"
 else
   say ".env already exists — leaving its model and capacity settings as they are"

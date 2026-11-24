@@ -5,7 +5,7 @@
     docker compose exec api python -m app.bench --concurrent 2           # two requests at once
 
 For each chat model: its capabilities (tools, thinking, vision), then a few
-typical requests — a short answer, a long one, French, a tool call — timed,
+typical requests — a short answer, a long one, French, code, a tool call — timed,
 with thinking off and (for models that think) on. For each embedding model:
 how many texts per second it embeds. Also the memory each model occupies.
 
@@ -35,6 +35,9 @@ PROMPTS: list[tuple[str, list[dict], bool]] = [  # (label, messages, needs tools
                       "Write a 200-word product description for a handwoven raffia tote bag."}], False),
     ("French", [{"role": "system", "content": "Réponds en français."},
                 {"role": "user", "content": "Explique en trois phrases ce qu'est une API."}], False),
+    ("code", [{"role": "user", "content":
+               "Write a TypeScript function that groups an array of orders by customer id and "
+               "returns the total amount per customer. Code only."}], False),
     ("tool call", [{"role": "user", "content": "How many raffia bags are in stock?"}], True),
 ]
 

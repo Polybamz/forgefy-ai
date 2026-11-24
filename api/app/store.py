@@ -57,6 +57,7 @@ class UsageRecord:
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
     error: str | None = None
+    audio_seconds: float | None = None  # speech requests: length of the recording
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
@@ -107,6 +108,7 @@ def _summarize(records: list[UsageRecord]) -> list[dict[str, Any]]:
             "p95_latency_ms": latencies[min(len(latencies) - 1, int(len(latencies) * 0.95))],
             "prompt_tokens": sum(i.prompt_tokens or 0 for i in items),
             "completion_tokens": sum(i.completion_tokens or 0 for i in items),
+            "audio_seconds": round(sum(i.audio_seconds or 0 for i in items), 1),
         })
     return rows
 
@@ -202,6 +204,7 @@ CREATE TABLE IF NOT EXISTS usage_log (
 );
 CREATE INDEX IF NOT EXISTS usage_log_app_created ON usage_log (app, created_at);
 ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS scopes TEXT[] NOT NULL DEFAULT '{chat}';
+ALTER TABLE usage_log ADD COLUMN IF NOT EXISTS audio_seconds REAL;
 """
 
 _KEY_COLUMNS = (
@@ -272,11 +275,12 @@ class PostgresStore:
     async def log_usage(self, record):
         await self._pool.execute(
             "INSERT INTO usage_log (request_id, key_id, app, environment, task, agent_version, model, "
-            "status, latency_ms, queue_ms, prompt_tokens, completion_tokens, error, created_at) "
-            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
+            "status, latency_ms, queue_ms, prompt_tokens, completion_tokens, error, created_at, audio_seconds) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)",
             record.request_id, record.key_id, record.app, record.environment, record.task,
             record.agent_version, record.model, record.status, record.latency_ms, record.queue_ms,
             record.prompt_tokens, record.completion_tokens, record.error, record.created_at,
+            record.audio_seconds,
         )
 
     async def usage_summary(self, app, days):
@@ -286,7 +290,8 @@ class PostgresStore:
                    round(avg(latency_ms))::int AS avg_latency_ms,
                    percentile_disc(0.95) WITHIN GROUP (ORDER BY latency_ms) AS p95_latency_ms,
                    coalesce(sum(prompt_tokens), 0)::int AS prompt_tokens,
-                   coalesce(sum(completion_tokens), 0)::int AS completion_tokens
+                   coalesce(sum(completion_tokens), 0)::int AS completion_tokens,
+                   round(coalesce(sum(audio_seconds), 0)::numeric, 1)::float AS audio_seconds
             FROM usage_log
             WHERE created_at >= now() - make_interval(days => $1) AND ($2::text IS NULL OR app = $2)
             GROUP BY app, task, status ORDER BY app, task, status

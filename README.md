@@ -20,15 +20,22 @@ Several families, so each kind of task can use the model that suits it — see
 |---|---|---|
 | `general` | `qwen3:8b` | Most things; tool calling |
 | `fast` | `qwen3:4b` | Quick, simple tasks |
+| `code` | `qwen2.5-coder:7b` | Writing, fixing and explaining code |
 | `reasoning` | `deepseek-r1:8b` | Maths, planning, step-by-step logic |
 | `vision` | `gemma3:4b` | Reading images |
 | `embed` | `bge-m3` | Embeddings for search and similarity |
-| — | `mistral:7b`, `llama3.1:8b` | Offered by name |
+| — | `mistral:7b`, `llama3.1:8b`, `phi4-mini:3.8b` | Offered by name |
 
 Apps can ask for a model by name (`"model": "mistral:7b"`) or by role
 (`"model": "fast"`). Roles are set in `MODEL_ALIASES`; change which model fills
 a role after benchmarking, and every app follows. Any other model from
-[ollama.com/library](https://ollama.com/library) can be added.
+[ollama.com/library](https://ollama.com/library) or Hugging Face can be added.
+
+On a bigger server, `setup.sh` steps up automatically — 14B models from 32 GB
+RAM, and from 50 GB RAM (or a 40 GB GPU) the big coding and assistant models:
+Qwen3-Coder 30B, Devstral and gpt-oss-20b. **Speech-to-text** (Whisper) runs as
+its own service — see [Speech-to-text](#speech-to-text). Image generation (FLUX)
+needs a GPU; see [MODELS.md](MODELS.md).
 
 On 24 GB, two models stay in memory at once; asking for another loads it
 (10–60 s on a CPU) and unloads the least recently used.
@@ -38,6 +45,7 @@ On 24 GB, two models stay in memory at once; asking for another loads it
 | **caddy** | HTTPS with an automatic Let's Encrypt certificate | Yes — 80/443 only |
 | **api** | The gateway: API keys, rate limits, a queue in front of the model, usage log | Through Caddy |
 | **ollama** | Runs the models | No |
+| **speech** | Speech-to-text (Whisper, through faster-whisper) | No |
 | **postgres** | API keys (hashed) and the usage log | No |
 
 Ollama has no authentication of its own, so it is never exposed: everything
@@ -68,12 +76,49 @@ each can do — tools, thinking, vision), `POST /v1/messages/count_tokens` (an
 estimate), `GET /api/v1/health`, `GET /api/v1/usage`, `GET /healthz` (no key,
 for uptime monitors), and interactive docs at `/docs`.
 
+## Speech-to-text
+
+Whisper turns recordings into text, in the language spoken (English, French
+and ~100 others) — or translates them into English. Same keys, OpenAI's format:
+
+```python
+from openai import OpenAI
+
+ai = OpenAI(base_url="https://ai.yourdomain.com/v1", api_key="aik_…", timeout=1800)
+with open("meeting.mp3", "rb") as f:
+    result = ai.audio.transcriptions.create(model="whisper-1", file=f, language="fr")
+print(result.text)
+```
+
+```bash
+curl https://ai.yourdomain.com/v1/audio/transcriptions -H "Authorization: Bearer aik_…" \
+  -F file=@meeting.mp3 -F response_format=verbose_json
+```
+
+| Endpoint | |
+|---|---|
+| `POST /v1/audio/transcriptions` | Audio → text. `language` ("en", "fr"…) skips detection; `prompt` can list names and jargon to spell right |
+| `POST /v1/audio/translations` | Audio in any language → English text |
+
+`response_format`: `json` (`{"text"}`), `text`, `verbose_json` (language,
+duration, timed segments), `srt` or `vtt` (subtitles). `model` is accepted for
+compatibility; the server always uses `WHISPER_MODEL` (default
+`large-v3-turbo`). Files: mp3, wav, m4a, ogg, webm, flac… up to `MAX_AUDIO_MB`
+(100 MB).
+
+**Speed on a CPU:** roughly real time on 4 cores — a 10-minute recording takes
+about 10 minutes, and recordings are transcribed one at a time. Fine for
+uploaded recordings; for live meetings keep a streaming service (Deepgram)
+or move speech to a GPU. Requests time out after 30 minutes, so split long
+recordings into parts of ~20 minutes. Usage is recorded in minutes of audio.
+
 ## Server
 
 A Contabo VPS with **8 vCPU, 24 GB RAM**, NVMe, Ubuntu 24.04 runs the default
-set above: about 16 GB for the model runtime (`OLLAMA_MEMORY_LIMIT`, two models
-loaded at a time) and 8 GB for the OS, Postgres and the API. The models take
-~27 GB of disk.
+set above: about 14 GB for the model runtime (`OLLAMA_MEMORY_LIMIT`, two models
+loaded at a time), 3 GB for speech-to-text, and the rest for the OS, Postgres
+and the API. The models take ~39 GB of disk (37 GB language models, 1.6 GB
+Whisper).
 
 On a CPU, expect a few to ~10 tokens/s from an 8B model — a short answer in
 seconds, a long one in a minute or two. **Measure on the real server** with the
@@ -99,7 +144,7 @@ curl -fsSL https://get.docker.com | sh          # if Docker isn't installed
 sudo ./scripts/harden.sh                         # firewall, SSH keys only, auto-updates
 ./scripts/setup.sh ai.yourdomain.com             # .env, DB password, model sized to the RAM
 docker compose up -d --build
-./scripts/pull-models.sh                         # downloads the models (~27 GB)
+./scripts/pull-models.sh                         # downloads the models (~37 GB)
 ```
 
 `harden.sh` turns SSH password login off **only if** an SSH key is already

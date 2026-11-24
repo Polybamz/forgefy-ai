@@ -14,12 +14,12 @@ TOKEN = "admin-" + "x" * 40
 
 
 @pytest.fixture
-async def console(store, llm):
+async def console(store, llm, speech):
     admin._failures.clear()
     settings = Settings(STORE="memory", DEFAULT_MODEL="qwen3:8b", CHAT_MODELS="qwen3:8b,qwen3:4b,mistral",
                         EMBEDDING_MODELS="bge-m3", MODEL_ALIASES="fast=qwen3:4b,embed=bge-m3",
                         ADMIN_TOKEN=TOKEN)
-    app = create_app(settings=settings, store=store, llm=llm)
+    app = create_app(settings=settings, store=store, llm=llm, speech=speech)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as c:
         yield c
 

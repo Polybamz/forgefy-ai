@@ -4,6 +4,7 @@
 #   api       the gateway — API keys, rate limits, queue, usage log; OpenAI,
 #             Anthropic and Ollama-format endpoints
 #   ollama    the model runtime; reachable only by the api
+#   speech    speech-to-text (Whisper); reachable only by the api
 #   postgres  API keys (hashed) and the usage log
 #
 # Start:     docker compose up -d --build
@@ -45,6 +46,9 @@ services:
       DEFAULT_RATE_LIMIT_PER_MINUTE: ${DEFAULT_RATE_LIMIT_PER_MINUTE:-30}
       DOCS_ENABLED: ${DOCS_ENABLED:-true}
       ADMIN_TOKEN: ${ADMIN_TOKEN:-}
+      SPEECH_URL: http://speech:8000
+      WHISPER_MODEL: ${WHISPER_MODEL:-large-v3-turbo}
+      MAX_AUDIO_MB: ${MAX_AUDIO_MB:-100}
       CHAT_MODELS: ${CHAT_MODELS:-}
       EMBEDDING_MODELS: ${EMBEDDING_MODELS:-}
       MODEL_ALIASES: ${MODEL_ALIASES:-}
@@ -69,7 +73,7 @@ services:
       OLLAMA_FLASH_ATTENTION: ${OLLAMA_FLASH_ATTENTION:-1}
     # Hard cap so a model that is too big fails to load instead of pushing
     # Postgres and the API out of memory. Size it to the server (README).
-    mem_limit: ${OLLAMA_MEMORY_LIMIT:-16g}
+    mem_limit: ${OLLAMA_MEMORY_LIMIT:-14g}
     volumes:
       - ollama_models:/root/.ollama
     healthcheck:
@@ -78,6 +82,22 @@ services:
       timeout: 10s
       retries: 5
       start_period: 20s
+
+  speech:
+    build: ./speech
+    restart: unless-stopped
+    environment:
+      WHISPER_MODEL: ${WHISPER_MODEL:-large-v3-turbo}
+      WHISPER_DEVICE: ${WHISPER_DEVICE:-cpu}
+      WHISPER_COMPUTE_TYPE: ${WHISPER_COMPUTE_TYPE:-int8}
+      WHISPER_BEAM_SIZE: ${WHISPER_BEAM_SIZE:-1}
+      MAX_UPLOAD_MB: ${MAX_AUDIO_MB:-100}
+    # Transcription uses every core it is given; cap it so the language models
+    # keep the rest. The model (~1.5 GB in memory) loads on first use.
+    cpus: ${SPEECH_CPUS:-4}
+    mem_limit: ${SPEECH_MEMORY_LIMIT:-3g}
+    volumes:
+      - speech_models:/models
 
   postgres:
     image: postgres:16-alpine
@@ -98,4 +118,5 @@ volumes:
   caddy_data:
   caddy_config:
   ollama_models:
+  speech_models:
   postgres_data:

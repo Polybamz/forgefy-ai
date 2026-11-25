@@ -135,6 +135,17 @@ models to a GPU server and keep this API in front.
 scp -r C:\Users\USER\Desktop\forgefy\forgefy-models root@YOUR_VPS_IP:/opt/
 ```
 
+Then, on the server, remove what belongs to your PC only — its `.env` (local
+settings) and the local HTTPS-certificate fix — so `setup.sh` writes the
+server's own:
+
+```bash
+cd /opt/forgefy-models && rm -rf .env docker-compose.override.yml local-ca
+```
+
+(Or push the folder to a private git repo and `git clone` it on the server —
+git already leaves those files out.)
+
 **3. On the server:**
 
 ```bash

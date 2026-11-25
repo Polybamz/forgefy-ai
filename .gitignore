@@ -2,3 +2,8 @@
 backups/
 __pycache__/
 *.pyc
+
+# Local-only fixes for one machine (e.g. trusting an antivirus's HTTPS
+# scanning certificate). Never needed on the VPS.
+docker-compose.override.yml
+local-ca/

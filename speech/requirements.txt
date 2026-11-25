@@ -1,6 +1,8 @@
 faster-whisper==1.1.1
 # faster-whisper 1.1.1 imports requests (to download models) without declaring it.
 requests==2.32.3
+# It also passes av.open(metadata_errors=...), which PyAV 14+ removed: keep PyAV 13.
+av==13.1.0
 fastapi==0.115.12
 uvicorn[standard]==0.34.2
 python-multipart==0.0.20

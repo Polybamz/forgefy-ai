@@ -19,6 +19,13 @@ set_env() {  # set_env KEY VALUE — replace the line for KEY in .env
   sed -i "s|^$1=.*|$1=$2|" .env
 }
 
+# Files that only make sense on the PC they were made on (e.g. trusting an
+# antivirus's HTTPS certificate) — copied here by mistake, they'd apply on the server.
+if [ -f docker-compose.override.yml ] || [ -d local-ca ]; then
+  warn "docker-compose.override.yml / local-ca/ are local-only fixes from another machine."
+  warn "Remove them on this server:  rm -rf docker-compose.override.yml local-ca"
+fi
+
 # ── 1. Docker ────────────────────────────────────────────────────────────────
 if ! command -v docker >/dev/null 2>&1; then
   die "Docker is not installed. Install it with:

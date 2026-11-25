@@ -30,6 +30,21 @@ for model in $models; do
     failed="$failed $model"
   fi
 done
+
+# Whisper (speech-to-text) downloads on first use otherwise, which would make
+# the first transcription wait for a multi-GB download. Fetch it now.
+# Skipped when models were named on the command line.
+if [ "$#" -eq 0 ] && docker compose ps --status running --services | grep -qx speech; then
+  whisper=$(grep -E '^WHISPER_MODEL=' .env | cut -d= -f2- | tr -d '"')
+  echo "==> downloading Whisper ${whisper:-large-v3-turbo} for speech-to-text"
+  # Download only (into the speech volume) — don't load a second copy into memory.
+  if ! output=$(docker compose exec -T speech python -c \
+      "import app; from faster_whisper.utils import download_model; download_model(app.MODEL, cache_dir=app.CACHE_DIR); print('ready')" 2>&1); then
+    echo "$output" | tail -n 3
+    failed="$failed whisper"
+  fi
+fi
+
 [ -z "$failed" ] || echo "!!  not downloaded:$failed"
 
 echo

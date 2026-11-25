@@ -76,7 +76,9 @@ elif { [ -n "$gpu_name" ] && [ "$vram_gb" -ge 20 ]; } || [ "$mem_limit" -ge 22 ]
   others="phi4:14b mistral-nemo:12b"
 elif { [ -n "$gpu_name" ] && [ "$vram_gb" -ge 10 ]; } || [ "$mem_limit" -ge 8 ]; then
   general="qwen3:8b"; fast="qwen3:4b"; code="qwen2.5-coder:7b"; reasoning="deepseek-r1:8b"; vision="gemma3:4b"
-  others="mistral:7b llama3.1:8b phi4-mini:3.8b"
+  # No extra models here: on a ~24 GB CPU server they'd only duplicate what
+  # qwen3 already does, and every extra model an app picks costs a slow reload.
+  others=""
 elif [ "$mem_limit" -ge 4 ]; then
   general="qwen3:4b"; fast="qwen3:1.7b"; code="qwen2.5-coder:3b"; reasoning="deepseek-r1:1.5b"; vision="gemma3:4b"
   others="phi4-mini:3.8b"; loaded=1

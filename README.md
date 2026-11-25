@@ -24,9 +24,8 @@ Several families, so each kind of task can use the model that suits it — see
 | `reasoning` | `deepseek-r1:8b` | Maths, planning, step-by-step logic |
 | `vision` | `gemma3:4b` | Reading images |
 | `embed` | `bge-m3` | Embeddings for search and similarity |
-| — | `mistral:7b`, `llama3.1:8b`, `phi4-mini:3.8b` | Offered by name |
 
-Apps can ask for a model by name (`"model": "mistral:7b"`) or by role
+Apps can ask for a model by name (`"model": "qwen3:8b"`) or by role
 (`"model": "fast"`). Roles are set in `MODEL_ALIASES`; change which model fills
 a role after benchmarking, and every app follows. Any other model from
 [ollama.com/library](https://ollama.com/library) or Hugging Face can be added.
@@ -273,7 +272,7 @@ large prompts — raise `NUM_CTX` to 32768 for it (costs RAM).
 | Logs | `docker compose logs -f api` |
 | What's in memory | `docker compose exec ollama ollama ps` |
 | Add a model | Check its license, add it to `MODELS` and `CHAT_MODELS` in `.env`, `./scripts/pull-models.sh`, record it in [MODELS.md](MODELS.md), `docker compose up -d` |
-| Change a role | Edit `MODEL_ALIASES` in `.env` (e.g. `fast=mistral:7b`), `docker compose up -d` |
+| Change a role | Edit `MODEL_ALIASES` in `.env` (e.g. `fast=qwen3:8b`), `docker compose up -d` |
 | Update | Copy the folder (or `git pull`), then `docker compose up -d --build` |
 
 **Rotating a key:** create a new one, put it in the app, deploy, then revoke the old one.

@@ -20,11 +20,17 @@ console's Models page, by `GET /v1/models`, and by the benchmark.
 | `reasoning` | `deepseek-r1:8b` | DeepSeek | ~5.2 GB | MIT | Yes | Step-by-step reasoning: maths, planning, logic. Slow on CPU — it thinks at length |
 | `vision` | `gemma3:4b` | Gemma (Google) | ~3.3 GB | Gemma Terms of Use | Yes, with conditions² | Reads images (product photos, screenshots, documents) |
 | `embed` | `bge-m3` | BGE (BAAI) | ~1.2 GB | MIT | Yes | Embeddings for search and similarity, multilingual incl. French |
-| — | `mistral:7b` | Mistral (France) | ~4.4 GB | Apache-2.0 | Yes | Fast general model; worth testing for French |
-| — | `llama3.1:8b` | Llama (Meta) | ~4.9 GB | Llama 3.1 Community License | Yes, with conditions¹ | Widely supported by tools; tool calling |
-| — | `phi4-mini:3.8b` | Phi (Microsoft) | ~2.5 GB | MIT | Yes | Lightweight; good reasoning for its size |
+About 22 GB on disk (plus ~1.6 GB for Whisper). Two models stay in memory at a time (see below).
 
-About 37 GB on disk. Two models stay in memory at a time (see below).
+**Optional, not downloaded by default.** On a 24 GB CPU server these mostly
+duplicate what qwen3 already does, and every extra model an app picks costs a
+10-60 s reload. Add one to `MODELS` and `CHAT_MODELS` if an app needs it:
+
+| Model (Ollama tag) | Family | Disk | License | Commercial use | Good for |
+|---|---|---|---|---|---|
+| `mistral:7b` | Mistral (France) | ~4.4 GB | Apache-2.0 | Yes | Fast general model; worth testing for French |
+| `llama3.1:8b` | Llama (Meta) | ~4.9 GB | Llama 3.1 Community License | Yes, with conditions¹ | Widely supported by tools; tool calling |
+| `phi4-mini:3.8b` | Phi (Microsoft) | ~2.5 GB | MIT | Yes | Lightweight; good reasoning for its size |
 
 ¹ Llama 3.1: commercial use allowed; services with over 700 million monthly
 users need a separate license from Meta; display "Built with Llama"; follow

@@ -216,6 +216,111 @@ input:focus, select:focus, textarea:focus, button:focus-visible, a:focus-visible
 .cursor::after { content: "▍"; color: var(--accent); animation: blink 1s steps(1) infinite; }
 @keyframes blink { 50% { opacity: 0; } }
 
+/* ── Docs ──────────────────────────────────────────────────────────────── */
+.toc { display: flex; flex-wrap: wrap; gap: 6px; }
+.toc a {
+  text-decoration: none; color: var(--muted); font-size: 13px; padding: 5px 10px;
+  border: 1px solid var(--line); border-radius: 999px; background: var(--panel);
+}
+.toc a:hover { color: var(--text); border-color: var(--faint); }
+.docs > .panel { scroll-margin-top: 16px; }
+.prose { max-width: 78ch; }
+.prose p, .prose ol, .prose ul { margin: 0 0 10px; }
+.prose li { margin-bottom: 6px; }
+.prose h3, .example h3 { font-size: 14px; margin: 6px 0 8px; }
+.prose table th, .prose table td { padding-left: 0; }
+.small { font-size: 12.5px; margin-top: 8px; }
+
+/* API families: one colour per API, used everywhere on the Docs page. */
+.docs, .docs-hero {
+  --f-chat: #4fd1c5; --f-embed: #a78bfa; --f-speech: #f6ad55; --f-connect: #63b3ed;
+  --c-tools: #63b3ed; --c-thinking: #f687b3; --c-vision: #f6e05e; --c-embedding: #a78bfa; --c-speech: #f6ad55;
+  --code-bg: #0b0e12;
+  --tk-comment: #7a8699; --tk-string: #f0b86e; --tk-keyword: #f38ba8; --tk-fn: #7cc4fa;
+  --tk-number: #c3a6ff; --tk-key: #5eead4; --tk-var: #ff9e7a; --tk-type: #f6e05e; --tk-punct: #9aa5b4;
+}
+@media (prefers-color-scheme: light) {
+  .docs, .docs-hero {
+    --f-chat: #0f766e; --f-embed: #6d28d9; --f-speech: #b45309; --f-connect: #0369a1;
+    --c-tools: #0369a1; --c-thinking: #be185d; --c-vision: #a16207; --c-embedding: #6d28d9; --c-speech: #b45309;
+    --code-bg: #fbfcfd;
+    --tk-comment: #6b7280; --tk-string: #b45309; --tk-keyword: #be185d; --tk-fn: #0369a1;
+    --tk-number: #6d28d9; --tk-key: #0f766e; --tk-var: #c2410c; --tk-type: #a16207; --tk-punct: #64748b;
+  }
+}
+.fam-chat { --fam: var(--f-chat); }
+.fam-embed { --fam: var(--f-embed); }
+.fam-speech { --fam: var(--f-speech); }
+.fam-connect { --fam: var(--f-connect); }
+
+/* Hero: the server's address, and the colour key. */
+.docs-hero {
+  padding: 22px 24px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel);
+  margin-bottom: 18px;
+}
+.hero-lead { margin: 0 0 4px; color: var(--muted); font-size: 13px; }
+.hero-url { font: 600 clamp(22px, 3.4vw, 34px)/1.15 var(--mono); overflow-wrap: anywhere; letter-spacing: -.01em; }
+.hero-url .u-scheme { color: var(--faint); font-weight: 400; }
+.hero-url .u-host { color: var(--f-chat); }
+.hero-endpoints { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+.ep {
+  display: inline-flex; align-items: center; gap: 8px; font: 12.5px var(--mono); padding: 5px 10px 5px 6px;
+  border-radius: 6px; color: var(--text);
+  background: color-mix(in srgb, var(--fam) 12%, transparent); border: 1px solid color-mix(in srgb, var(--fam) 35%, transparent);
+}
+.ep-method { font-size: 10.5px; font-weight: 700; padding: 2px 5px; border-radius: 4px; background: var(--fam); color: var(--bg); }
+.hero-key { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 14px; font-size: 12.5px; color: var(--muted); }
+.key-item, .api-name { display: inline-flex; align-items: center; gap: 8px; }
+.key-item i, .api-name i { width: 10px; height: 10px; border-radius: 3px; background: var(--fam); flex: none; }
+.api-name { font-weight: 600; }
+code.ep-path { color: var(--fam); }
+
+/* Capability chips. */
+.chip.cap { border-color: color-mix(in srgb, var(--cap, var(--faint)) 40%, transparent); color: var(--cap, var(--muted));
+  background: color-mix(in srgb, var(--cap, var(--faint)) 10%, transparent); }
+.cap-tools { --cap: var(--c-tools); }
+.cap-thinking { --cap: var(--c-thinking); }
+.cap-vision { --cap: var(--c-vision); }
+.cap-embedding { --cap: var(--c-embedding); }
+.cap-speech { --cap: var(--c-speech); }
+
+/* Examples: a coloured rail shows which API each one uses. */
+.example { position: relative; padding: 2px 0 2px 18px; }
+.example::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; border-radius: 2px; background: var(--fam); }
+.example + .example { margin-top: 10px; }
+.example > p { margin: 0 0 10px; }
+.example-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.fam-tag { font-size: 12px; font-weight: 600; color: var(--fam); white-space: nowrap; }
+
+/* Code blocks with syntax colours. */
+.tabs { display: grid; gap: 8px; }
+.tabs .segmented { justify-self: start; }
+.code-wrap { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--code-bg); }
+.code-bar {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 5px 8px 5px 12px; border-bottom: 1px solid var(--line); background: var(--panel-2);
+  font-size: 12px; color: var(--muted);
+}
+.code-bar .lang { display: inline-flex; align-items: center; gap: 7px; font-weight: 600; }
+.code-bar .lang::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--lang, var(--faint)); }
+.lang-python { --lang: #4b8bbe; }
+.lang-javascript, .lang-typescript { --lang: #e8c547; }
+.lang-php { --lang: #8892bf; }
+.lang-bash { --lang: #4fd1c5; }
+.lang-env { --lang: #f6ad55; }
+pre.code { margin: 0; padding: 12px 14px; overflow-x: auto; font: 12.5px/1.6 var(--mono); color: var(--text); }
+pre.code code { font-size: inherit; color: inherit; background: none; padding: 0; }
+.tk-comment { color: var(--tk-comment); font-style: italic; }
+.tk-string { color: var(--tk-string); }
+.tk-keyword { color: var(--tk-keyword); }
+.tk-builtin, .tk-type { color: var(--tk-type); }
+.tk-fn { color: var(--tk-fn); }
+.tk-number, .tk-const { color: var(--tk-number); }
+.tk-key { color: var(--tk-key); }
+.tk-var, .tk-flag { color: var(--tk-var); }
+.tk-meta { color: var(--tk-keyword); font-style: italic; }
+.tk-punct { color: var(--tk-punct); }
+
 .toast {
   position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--panel-2);
   border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; font-size: 13px; z-index: 10;

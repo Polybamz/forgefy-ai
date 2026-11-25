@@ -484,12 +484,8 @@ async function playground(c) {
   c.append(h("div", { class: "play" }, controls, h("section", { class: "panel" }, transcript, composer)));
   drawHistory();
 }
-function docs(c) {
-  c.append(pageHead("Docs", "The API is fully documented in OpenAPI format."));
-  c.append(h("div", { class: "stack" },
-    panel("OpenAPI spec", h("div", { class: "panel-body" }, h("p", {}, "The API is fully described in OpenAPI format, which can be used to generate client code or documentation."), h("a", { href: "/admin/api/openapi.json", target: "_blank" }, "/admin/api/openapi.json"))),
-    panel("Swagger UI", h("div", { class: "panel-body" }, h("p", {}, "Interactive API documentation and testing via Swagger UI."), h("a", { href: "/admin/api/docs", target: "_blank" }, "/admin/api/docs")))));
-}
+// The Docs page lives in docs.js (loaded before this file).
+
 function bubble(role, text, thinking, meta) {
   return h("div", { class: `msg ${role}` },
     h("div", { class: "who" }, role === "user" ? "You" : "Model"),

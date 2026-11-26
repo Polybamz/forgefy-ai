@@ -60,6 +60,11 @@ function rules(lang) {
               ["flag", /(?<=\s)--?[A-Za-z][\w-]*/y], ["key", /\b[A-Za-z_]+(?==)/y]];
     case "env":
       return [["comment", /#[^\n]*/y], ["key", /^[A-Z][A-Z0-9_]*(?==)/my], ["punct", /=/y]];
+    case "markdown":
+      return [["punct", /^---$/my], ["key", /^[a-z][\w-]*(?=:)/my], ["keyword", /^#{1,6} [^\n]*/my],
+              ["number", /^\d+\.(?= )/my], ["punct", /^\s*[-*](?= )/my]];
+    case "tree":
+      return [["comment", /#[^\n]*/y], ["punct", /[├└│─]+/y], ["fn", /[\w.-]+\/(?=\s|$)/my]];
     case "text":
       return [["key", /^[^:\n]+:/my]];
     default:
@@ -97,7 +102,7 @@ function highlight(code, lang) {
 }
 
 const LANG_LABELS = { python: "Python", javascript: "JavaScript", typescript: "TypeScript", php: "PHP",
-                      bash: "Shell", env: ".env", text: "Settings" };
+                      bash: "Shell", env: ".env", text: "Settings", markdown: "Markdown", tree: "Folders" };
 
 function codeBlock(code, lang) {
   const src = code.trim();
@@ -176,7 +181,7 @@ async function docs(c) {
 
   // ── Contents ──
   const sections = [["quick", "Quick start"], ["models", "Models"], ["key", "Get a key"],
-    ["modes", "APIs & modes"], ["examples", "Examples"], ["limits", "Errors & limits"]];
+    ["modes", "APIs & modes"], ["skills", "Skills & plugins"], ["examples", "Examples"], ["limits", "Errors & limits"]];
   const toc = h("nav", { class: "toc", "aria-label": "On this page" },
     sections.map(([id, label]) => h("a", { href: `#docs`, onclick: (e) => {
       e.preventDefault(); document.getElementById(`d-${id}`).scrollIntoView({ behavior: "smooth" });
@@ -267,6 +272,167 @@ async function docs(c) {
         ["Conversation", h("td", { class: "wrap" }, "Send the earlier messages again each time"), h("td", { class: "wrap" }, "The server keeps no history: your app owns the conversation.")],
       ]))));
   modes.id = "d-modes";
+
+  // ── Skills & plugins ──
+  const skillMd = `
+---
+name: product-listing
+description: Write an online shop listing for a product. Use when asked to describe or list a product for sale.
+---
+
+# Product listing
+
+Write the listing in this order:
+1. A title under 60 characters
+2. Three short bullet points on what the buyer gets
+3. Materials and size
+4. Price in FCFA, if given
+
+Keep it friendly and plain. Answer in the customer's language (English or French).`;
+
+  const skills = panel("Skills & plugins", h("div", { class: "panel-body stack" },
+    h("div", { class: "prose" },
+      h("p", {}, "This server only runs the models. ", h("strong", {}, "Skills and plugins live in the tool or app that calls it"),
+        ", so each app can use the ones it wants, and you add or change them without touching the server."),
+      h("ul", {},
+        h("li", {}, h("strong", {}, "A skill"), " is a folder with a ", h("code", {}, "SKILL.md"),
+          " file: a name, a one-line description of when to use it, and instructions. The model sees only the descriptions, and reads a skill's instructions when a task matches."),
+        h("li", {}, h("strong", {}, "A plugin"), " bundles skills with tools: MCP servers, subagents and hooks, or in your own app, functions the model can call.")),
+      h("p", {}, "Pick the way that matches where you use the models. All three need a model with the ",
+        capChip("tools"), " capability; ", h("code", {}, generalName), " has it.")),
+
+    example("1. In Claude Code", "Claude Code loads skills, plugins and MCP servers itself. Point it at this server and use them as usual.", [
+      ["Claude Code", `
+# 1. Point Claude Code at this server (add these to your shell profile)
+export ANTHROPIC_BASE_URL=${BASE}
+export ANTHROPIC_API_KEY=${KEY}
+
+# 2. Add a skill: one folder per skill, with a SKILL.md inside
+mkdir -p .claude/skills/product-listing      # this project only
+mkdir -p ~/.claude/skills/product-listing    # every project
+
+# 3. Start it. Plugins and MCP servers are added the usual way, inside Claude Code:
+claude
+#   /plugin install <plugin>@<marketplace>
+#   /mcp`, "bash"],
+      ["SKILL.md", skillMd, "markdown"],
+      ["Plugin folder", `
+my-plugin/
+├── .claude-plugin/
+│   └── plugin.json        # name, version, description (optional)
+├── skills/
+│   └── product-listing/
+│       └── SKILL.md
+├── agents/                # subagents (optional)
+├── hooks/hooks.json       # hooks (optional)
+└── .mcp.json              # MCP servers, i.e. extra tools (optional)`, "tree"],
+    ], "Claude Code sends long instructions with every request: raise NUM_CTX to 32768 in the server's .env, and expect slower answers than from Claude itself.", "connect"),
+
+    example("2. In your app, with the Claude Agent SDK", "The Agent SDK is Claude Code as a library: your app gets the same skills, plugins, MCP servers and tools, running on this server's models.", [
+      ["Python", `
+# pip install claude-agent-sdk
+import asyncio
+import os
+
+from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
+
+options = ClaudeAgentOptions(
+    cwd="/srv/my-app",                    # skills in /srv/my-app/.claude/skills/
+    setting_sources=["project"],          # load the project's skills
+    skills="all",                         # or a list: ["product-listing"]
+    plugins=[{"type": "local", "path": "./plugins/my-plugin"}],
+    allowed_tools=["Read", "Grep", "Glob"],
+    env={"ANTHROPIC_BASE_URL": "${BASE}", "ANTHROPIC_API_KEY": os.environ["AI_API_KEY"]},
+)
+
+async def main():
+    async for message in query(prompt="Write a listing for a raffia tote bag", options=options):
+        if isinstance(message, ResultMessage) and message.subtype == "success":
+            print(message.result)
+
+asyncio.run(main())`, "python"],
+      ["TypeScript", `
+// npm install @anthropic-ai/claude-agent-sdk
+import { query } from "@anthropic-ai/claude-agent-sdk";
+
+for await (const message of query({
+  prompt: "Write a listing for a raffia tote bag",
+  options: {
+    cwd: "/srv/my-app",                   // skills in /srv/my-app/.claude/skills/
+    settingSources: ["project"],
+    skills: "all",
+    plugins: [{ type: "local", path: "./plugins/my-plugin" }],
+    allowedTools: ["Read", "Grep", "Glob"],
+    env: { ...process.env, ANTHROPIC_BASE_URL: "${BASE}", ANTHROPIC_API_KEY: process.env.AI_API_KEY },
+  },
+})) {
+  if (message.type === "result" && message.subtype === "success") console.log(message.result);
+}`, "typescript"],
+    ], "Plugin skills are named plugin-name:skill-name. To run one directly, send it as the prompt, e.g. \"/my-plugin:product-listing\".", "connect"),
+
+    example("3. In any app, with the OpenAI SDK", "No agent framework needed: keep skills as SKILL.md folders and plugins as functions, and give the model one tool to open a skill.", [
+      ["Python", `
+# Skills: ./skills/<name>/SKILL.md  ·  Plugins: tools plus the code that runs them
+import json
+import os
+import pathlib
+
+from openai import OpenAI
+
+ai = OpenAI(base_url="${BASE}/v1", api_key=os.environ["AI_API_KEY"])
+
+def load_skill(path):
+    text = path.read_text(encoding="utf-8")
+    header = text.split("---")[1]
+    meta = dict(line.split(":", 1) for line in header.strip().splitlines())
+    return meta["name"].strip(), {"description": meta["description"].strip(), "text": text}
+
+SKILLS = dict(load_skill(p) for p in pathlib.Path("skills").glob("*/SKILL.md"))
+
+# A plugin: what the model sees, and the function your app runs.
+PLUGINS = {
+    "get_order_status": ({
+        "type": "function",
+        "function": {
+            "name": "get_order_status",
+            "description": "Status of a customer's order",
+            "parameters": {"type": "object", "properties": {"order_id": {"type": "string"}}, "required": ["order_id"]},
+        },
+    }, lambda args: {"order_id": args["order_id"], "status": "shipped"}),
+}
+
+use_skill = {
+    "type": "function",
+    "function": {
+        "name": "use_skill",
+        "description": "Read a skill's instructions before doing a task it covers.",
+        "parameters": {"type": "object", "properties": {"name": {"type": "string", "enum": list(SKILLS)}}, "required": ["name"]},
+    },
+}
+tools = [use_skill] + [spec for spec, _ in PLUGINS.values()]
+skill_list = "".join(f"\\n- {name}: {s['description']}" for name, s in SKILLS.items())
+messages = [
+    {"role": "system", "content": "When a task matches one of these skills, call use_skill first:" + skill_list},
+    {"role": "user", "content": "Write a listing for a raffia tote bag, 8500 FCFA"},
+]
+
+for _ in range(8):                        # stop runaway loops
+    reply = ai.chat.completions.create(model="${generalName}", messages=messages, tools=tools).choices[0].message
+    messages.append(reply)
+    if not reply.tool_calls:
+        break
+    for call in reply.tool_calls:
+        args = json.loads(call.function.arguments)
+        if call.function.name == "use_skill":
+            result = SKILLS[args["name"]]["text"]
+        else:
+            result = json.dumps(PLUGINS[call.function.name][1](args))
+        messages.append({"role": "tool", "tool_call_id": call.id, "content": result})
+
+print(reply.content)`, "python"],
+      ["SKILL.md", skillMd, "markdown"],
+    ], "Only the skill descriptions go in every request; a skill's full text is sent only when the model asks for it, which keeps requests short and fast on a CPU.", "connect")));
+  skills.id = "d-skills";
 
   // ── Examples ──
   const ex = [];
@@ -552,5 +718,5 @@ Model:            ${generalName}   (or any model name from the Models section)`,
         h("li", {}, h("strong", {}, "Keys: "), "keep them on your servers. A key in a website or mobile app can be copied by anyone.")))));
   limits.id = "d-limits";
 
-  c.append(h("div", { class: "docs stack" }, toc, quick, models, key, modes, examples, limits));
+  c.append(h("div", { class: "docs stack" }, toc, quick, models, key, modes, skills, examples, limits));
 }

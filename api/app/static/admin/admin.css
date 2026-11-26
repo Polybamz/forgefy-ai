@@ -308,6 +308,8 @@ code.ep-path { color: var(--fam); }
 .lang-php { --lang: #8892bf; }
 .lang-bash { --lang: #4fd1c5; }
 .lang-env { --lang: #f6ad55; }
+.lang-markdown { --lang: #a78bfa; }
+.lang-tree { --lang: #63b3ed; }
 pre.code { margin: 0; padding: 12px 14px; overflow-x: auto; font: 12.5px/1.6 var(--mono); color: var(--text); }
 pre.code code { font-size: inherit; color: inherit; background: none; padding: 0; }
 .tk-comment { color: var(--tk-comment); font-style: italic; }

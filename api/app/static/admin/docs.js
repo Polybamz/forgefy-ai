@@ -401,18 +401,18 @@ PLUGINS = {
     }, lambda args: {"order_id": args["order_id"], "status": "shipped"}),
 }
 
-use_skill = {
+read_skill = {
     "type": "function",
     "function": {
-        "name": "use_skill",
+        "name": "read_skill",
         "description": "Read a skill's instructions before doing a task it covers.",
         "parameters": {"type": "object", "properties": {"name": {"type": "string", "enum": list(SKILLS)}}, "required": ["name"]},
     },
 }
-tools = [use_skill] + [spec for spec, _ in PLUGINS.values()]
+tools = [read_skill] + [spec for spec, _ in PLUGINS.values()]
 skill_list = "".join(f"\\n- {name}: {s['description']}" for name, s in SKILLS.items())
 messages = [
-    {"role": "system", "content": "When a task matches one of these skills, call use_skill first:" + skill_list},
+    {"role": "system", "content": "When a task matches one of these skills, call read_skill first:" + skill_list},
     {"role": "user", "content": "Write a listing for a raffia tote bag, 8500 FCFA"},
 ]
 
@@ -423,7 +423,7 @@ for _ in range(8):                        # stop runaway loops
         break
     for call in reply.tool_calls:
         args = json.loads(call.function.arguments)
-        if call.function.name == "use_skill":
+        if call.function.name == "read_skill":
             result = SKILLS[args["name"]]["text"]
         else:
             result = json.dumps(PLUGINS[call.function.name][1](args))
@@ -431,7 +431,7 @@ for _ in range(8):                        # stop runaway loops
 
 print(reply.content)`, "python"],
       ["SKILL.md", skillMd, "markdown"],
-    ], "Only the skill descriptions go in every request; a skill's full text is sent only when the model asks for it, which keeps requests short and fast on a CPU.", "connect")));
+    ], "Only the skill descriptions go in every request; a skill's full text is sent only when the model asks for it, which keeps requests short and fast on a CPU. Tool names matter to small models: qwen3 calls a tool named read_skill reliably, but answers nothing when the same tool is named use_skill.", "connect")));
   skills.id = "d-skills";
 
   // ── Examples ──
